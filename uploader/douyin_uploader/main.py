@@ -6,6 +6,7 @@ import inspect
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 from patchright.async_api import Page
 from patchright.async_api import Playwright
@@ -23,6 +24,12 @@ from utils.log import douyin_logger
 
 DOUYIN_PUBLISH_STRATEGY_IMMEDIATE = "immediate"
 DOUYIN_PUBLISH_STRATEGY_SCHEDULED = "scheduled"
+DOUYIN_BROWSER_ARGS = [
+    "--no-sandbox",
+    "--disable-blink-features=AutomationControlled",
+    # Domestic creator traffic must not inherit the system proxy used by Codex/VPN.
+    "--no-proxy-server",
+]
 
 
 def _msg(emoji: str, text: str) -> str:
@@ -114,7 +121,7 @@ async def cookie_auth(account_file):
         return False
 
     use_headless = os.environ.get("DOUYIN_COOKIE_AUTH_HEADLESS", "true").lower() in ("1", "true", "yes")
-    launch_kwargs = {"headless": use_headless, "channel": "chromium", "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"]}
+    launch_kwargs = {"headless": use_headless, "channel": "chromium", "args": DOUYIN_BROWSER_ARGS}
     for _attempt in range(3):
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(**launch_kwargs)
@@ -276,7 +283,7 @@ async def douyin_cookie_gen(
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
             should_close_context = False
         else:
-            browser = await playwright.chromium.launch(headless=headless, channel="chromium")
+            browser = await playwright.chromium.launch(headless=headless, channel="chromium", args=DOUYIN_BROWSER_ARGS)
             context = await browser.new_context()
             should_close_context = True
         context = await set_init_script(context)
@@ -792,6 +799,20 @@ class DouYinVideo(DouYinBaseUploader):
         douyin_logger.warning(_msg("😵", "视频上传摔了一跤，小人马上重新上传"))
         await page.locator('div.progress-div [class^="upload-btn-input"]').set_input_files(self.file_path)
 
+    async def save_failure_screenshot(self, page: Page, reason: str) -> str | None:
+        screenshot_path = os.environ.get("SAU_FAILURE_SCREENSHOT", "").strip()
+        if not screenshot_path:
+            return None
+        try:
+            target = Path(screenshot_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await page.screenshot(path=str(target), full_page=True)
+            douyin_logger.error(_msg("📷", f"失败页面截图已保存: {target}（{reason}）"))
+            return str(target)
+        except Exception as exc:
+            douyin_logger.warning(_msg("⚠️", f"保存失败截图时出错: {exc}"))
+            return None
+
     async def handle_auto_video_cover(self, page):
         if await page.get_by_text("请设置封面后再发布").first.is_visible():
             douyin_logger.info(_msg("🧍", "发布前还得先把封面弄好"))
@@ -973,7 +994,7 @@ class DouYinVideo(DouYinBaseUploader):
         await self.validate_upload_args()
         douyin_logger.info(_msg("🥳", "上传前检查通过"))
 
-        browser = await playwright.chromium.launch(headless=self.headless, channel="chromium", args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+        browser = await playwright.chromium.launch(headless=self.headless, channel="chromium", args=DOUYIN_BROWSER_ARGS)
         context = await browser.new_context(
             storage_state=f"{self.account_file}",
             permissions=["geolocation"],
@@ -981,6 +1002,13 @@ class DouYinVideo(DouYinBaseUploader):
         context = await set_init_script(context)
 
         page = await context.new_page()
+        def _log_failed_request(request):
+            if request.resource_type not in {"xhr", "fetch", "media"}:
+                return
+            host = urlparse(request.url).hostname or "unknown-host"
+            douyin_logger.error(_msg("🌐", f"网络请求失败: {host} · {request.failure or 'unknown error'}"))
+
+        page.on("requestfailed", _log_failed_request)
         await page.goto("https://creator.douyin.com/creator-micro/content/upload", wait_until="domcontentloaded", timeout=90000)
         douyin_logger.info(_msg("🏃", f"小人开始搬运视频: {self.title}.mp4"))
         douyin_logger.info(_msg("🧭", "小人正在赶往上传主页"))
@@ -1001,6 +1029,8 @@ class DouYinVideo(DouYinBaseUploader):
         await upload_input.wait_for(state="attached", timeout=60000)
         await upload_input.set_input_files(self.file_path)
 
+        upload_failures = 0
+        max_upload_failures = max(1, int(os.environ.get("SAU_UPLOAD_MAX_RETRIES", "3")))
         while True:
             try:
                 await page.wait_for_url(
@@ -1035,8 +1065,14 @@ class DouYinVideo(DouYinBaseUploader):
                 douyin_logger.info(_msg("🏃", "小人正在努力上传视频"))
                 await asyncio.sleep(2)
                 if await page.locator('div.progress-div > div:has-text("上传失败")').count():
+                    upload_failures += 1
                     douyin_logger.error(_msg("😵", "检测到上传失败，小人准备重试"))
+                    if upload_failures >= max_upload_failures:
+                        await self.save_failure_screenshot(page, f"视频连续上传失败 {upload_failures} 次")
+                        raise RuntimeError(f"视频连续上传失败 {upload_failures} 次，已停止自动重试")
                     await self.handle_upload_error(page)
+            except RuntimeError:
+                raise
             except Exception:
                 douyin_logger.debug(_msg("🧍", "小人还在等视频上传完成"))
                 await asyncio.sleep(2)
@@ -1068,8 +1104,12 @@ class DouYinVideo(DouYinBaseUploader):
             await self.set_schedule_time_douyin(page, self.publish_date)
 
         sms_prompt_logged = False
+        submit_started = asyncio.get_running_loop().time()
         while True:
             try:
+                if asyncio.get_running_loop().time() - submit_started > 600:
+                    await self.save_failure_screenshot(page, "点击发布后 10 分钟内未收到成功回执")
+                    raise RuntimeError("点击发布后 10 分钟内未收到成功回执，已停止等待")
                 # 移除会拦截发布按钮点击的新手引导/话题下拉浮层
                 await page.evaluate(
                     "() => { document.querySelectorAll('.shepherd-element, .shepherd-modal-overlay-container, [class*=\"mention-wrapper\"]').forEach(e => e.remove()); }"
@@ -1102,6 +1142,8 @@ class DouYinVideo(DouYinBaseUploader):
                 )
                 douyin_logger.success(_msg("🥳", "视频发布成功，小人开心收工"))
                 break
+            except RuntimeError:
+                raise
             except Exception:
                 await self.handle_auto_video_cover(page)
                 douyin_logger.info(_msg("🏃", "小人正在冲刺发布视频"))
@@ -1232,7 +1274,7 @@ class DouYinNote(DouYinBaseUploader):
         await self.validate_upload_args()
         douyin_logger.info(_msg("🥳", "图文上传前检查通过"))
 
-        browser = await playwright.chromium.launch(headless=self.headless, channel="chromium", args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+        browser = await playwright.chromium.launch(headless=self.headless, channel="chromium", args=DOUYIN_BROWSER_ARGS)
         context = await browser.new_context(
             storage_state=f"{self.account_file}",
             permissions=["geolocation"],

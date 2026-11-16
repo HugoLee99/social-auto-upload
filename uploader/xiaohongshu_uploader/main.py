@@ -44,6 +44,22 @@ def _msg(emoji: str, text: str) -> str:
     return f"{emoji} {text}"
 
 
+XHS_BROWSER_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    # Keep domestic creator traffic outside the system proxy used by Codex/VPN.
+    "--no-proxy-server",
+]
+
+
+def _build_browser_launch_kwargs(headless: bool) -> dict:
+    launch_kwargs = {"headless": headless, "args": XHS_BROWSER_ARGS}
+    if LOCAL_CHROME_PATH:
+        launch_kwargs["executable_path"] = LOCAL_CHROME_PATH
+    else:
+        launch_kwargs["channel"] = "chromium"
+    return launch_kwargs
+
+
 async def _js_click_by_text(page: Page, text: str) -> bool:
     """用 JS 找到文字完全匹配的最内层元素并点击它及其祖先（绕过 span pointer-events:none / 遮罩拦截）。
 
@@ -180,9 +196,9 @@ async def cookie_auth(account_file):
 
     async with async_playwright() as playwright:
         if LOCAL_CHROME_PATH:
-            browser = await playwright.chromium.launch(headless=True, executable_path=LOCAL_CHROME_PATH)
+            browser = await playwright.chromium.launch(headless=True, executable_path=LOCAL_CHROME_PATH, args=XHS_BROWSER_ARGS)
         else:
-            browser = await playwright.chromium.launch(headless=True, channel="chromium")
+            browser = await playwright.chromium.launch(headless=True, channel="chromium", args=XHS_BROWSER_ARGS)
         try:
             context = await browser.new_context(storage_state=account_file)
             context = await set_init_script(context)
@@ -222,7 +238,16 @@ async def xiaohongshu_setup(
     return_detail=False,
     qrcode_callback=None,
     headless: bool = LOCAL_CHROME_HEADLESS,
+    force_login: bool = False,
 ):
+    if force_login:
+        xiaohongshu_logger.info(_msg("🔄", "准备刷新小红书登录态，打开浏览器等待扫码"))
+        result = await xiaohongshu_cookie_gen(
+            account_file,
+            qrcode_callback=qrcode_callback,
+            headless=headless,
+        )
+        return result if return_detail else result["success"]
     if not os.path.exists(account_file) or not await cookie_auth(account_file):
         if not handle:
             result = _build_login_result(False, "cookie_invalid", "cookie文件不存在或已失效", account_file)
@@ -253,7 +278,7 @@ async def xiaohongshu_cookie_gen(
     account_path.parent.mkdir(parents=True, exist_ok=True)
 
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=headless, channel="chromium")
+        browser = await playwright.chromium.launch(**_build_browser_launch_kwargs(headless))
         context = await browser.new_context()
         context = await set_init_script(context)
         qrcode_path = None
@@ -261,7 +286,11 @@ async def xiaohongshu_cookie_gen(
         result = _build_login_result(False, "failed", "小红书登录失败", account_file)
         try:
             page = await context.new_page()
-            await page.goto(_build_xhs_creator_url("/login"))
+            await page.goto(
+                _build_xhs_creator_url("/login"),
+                wait_until="domcontentloaded",
+                timeout=120000,
+            )
             qrcode_info = await _save_xhs_qrcode(page, account_file, qrcode_callback=qrcode_callback)
             qrcode_path = Path(qrcode_info["image_path"])
             xiaohongshu_logger.info(_msg("🧍", "请扫码，小人正在耐心等待登录完成"))
@@ -702,7 +731,7 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
         xiaohongshu_logger.info(_msg("🧍", "小人先检查 cookie、视频文件、封面和发布时间"))
         await self.validate_upload_args()
         xiaohongshu_logger.info(_msg("🥳", "上传前检查通过"))
-        browser = await playwright.chromium.launch(headless=self.headless, channel="chromium")
+        browser = await playwright.chromium.launch(**_build_browser_launch_kwargs(self.headless))
         context = await browser.new_context(
             permissions=["geolocation"],
             storage_state=self.account_file,
@@ -825,7 +854,7 @@ class XiaoHongShuNote(XiaoHongShuBaseUploader):
         xiaohongshu_logger.info(_msg("🧍", "小人先检查 cookie、图片和发布时间"))
         await self.validate_upload_args()
         xiaohongshu_logger.info(_msg("🥳", "图文上传前检查通过"))
-        browser = await playwright.chromium.launch(headless=self.headless, channel="chromium")
+        browser = await playwright.chromium.launch(**_build_browser_launch_kwargs(self.headless))
         context = await browser.new_context(
             permissions=["geolocation"],
             storage_state=self.account_file,

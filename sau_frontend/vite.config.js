@@ -23,23 +23,13 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:5409',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, '')
+        changeOrigin: true
       }
     }
   },
   build: {
     outDir: 'dist',
     sourcemap: false,
-    chunkSizeWarningLimit: 1600,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          vue: ['vue', 'vue-router', 'pinia'],
-          elementPlus: ['element-plus'],
-          utils: ['axios']
-        }
-      }
-    }
+    chunkSizeWarningLimit: 1600
   }
 })

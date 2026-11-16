@@ -84,7 +84,13 @@ class XiaohongshuNoteUploadRequest:
 
 async def login_xiaohongshu_account(account_name: str, headless: bool = True) -> dict:
     account_file = resolve_account_file("xiaohongshu", account_name)
-    return await xiaohongshu_setup(str(account_file), handle=True, return_detail=True, headless=headless)
+    return await xiaohongshu_setup(
+        str(account_file),
+        handle=True,
+        return_detail=True,
+        headless=headless,
+        force_login=True,
+    )
 
 
 async def check_xiaohongshu_account(account_name: str) -> bool:
