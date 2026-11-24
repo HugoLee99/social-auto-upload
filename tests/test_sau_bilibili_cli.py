@@ -18,6 +18,11 @@ class BilibiliCliTests(unittest.TestCase):
         self.assertEqual(args.platform, "bilibili")
         self.assertEqual(args.action, "login")
 
+    def test_build_parser_accepts_headed_compatibility_flag_for_bilibili_login(self):
+        parser = sau_cli.build_parser()
+        args = parser.parse_args(["bilibili", "login", "--account", "creator", "--headed"])
+        self.assertTrue(args.headed)
+
     def test_build_parser_requires_tid_for_upload_video(self):
         parser = sau_cli.build_parser()
         with self.assertRaises(SystemExit):

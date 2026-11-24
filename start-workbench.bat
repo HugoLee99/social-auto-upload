@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title SAU Creator Workbench
+title Daydream Dispatch
 
 if not exist ".venv\Scripts\python.exe" (
   echo [ERROR] Python virtual environment not found.
@@ -21,11 +21,12 @@ if not exist "sau_frontend\dist\index.html" (
 )
 
 echo.
-echo SAU Creator Workbench is starting...
+echo Daydream Dispatch is starting...
 echo Open: http://127.0.0.1:5409
-echo Keep this window open for account monitoring.
+echo Keep this window open while Daydream Dispatch monitors your accounts.
 echo.
 set "SAU_OPEN_BROWSER=1"
+set "SAU_BILIUP_ROOT=%~dp0.local\tools\biliup"
 ".venv\Scripts\python.exe" workbench_server.py
 exit /b %errorlevel%
 

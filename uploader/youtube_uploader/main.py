@@ -12,11 +12,14 @@ Login is interactive (Google account, no QR code): the browser opens, the user s
 the storage_state is saved. Reuse it afterwards for fully unattended uploads.
 """
 import asyncio
+import json
+import time
 from pathlib import Path
+from urllib.parse import urlparse
 
-from patchright.async_api import Page, Playwright, async_playwright
+from patchright.async_api import Page, Playwright, TimeoutError as PlaywrightTimeoutError, async_playwright
 
-from conf import DEBUG_MODE
+from conf import DEBUG_MODE, LOCAL_CHROME_PATH
 from uploader.base_video import BaseVideoUploader
 from utils.base_social_media import set_init_script
 from utils.log import youtube_logger
@@ -29,8 +32,16 @@ except Exception:
     YT_PROXY = None
 
 STUDIO_URL = "https://studio.youtube.com"
-UPLOAD_URL = "https://www.youtube.com/upload"
 VISIBILITY = {"public": "PUBLIC", "unlisted": "UNLISTED", "private": "PRIVATE"}
+UPLOAD_DIALOG_SELECTOR = "ytcp-uploads-dialog, ytcp-video-upload-dialog"
+UPLOAD_BUTTON_SELECTOR = (
+    "#upload-button, button[aria-label='Upload videos'], button[aria-label='上传视频']"
+)
+WELCOME_CONTINUE_SELECTOR = (
+    "ytcp-warm-welcome-dialog #dismiss-button, "
+    "ytcp-warm-welcome-dialog button:has-text('Continue'), "
+    "ytcp-warm-welcome-dialog button:has-text('继续')"
+)
 
 
 def _msg(emoji: str, text: str) -> str:
@@ -47,31 +58,95 @@ def _build_login_result(success, status, message, account_file, current_url=""):
     }
 
 
+def _browser_launch_options(*, headless: bool) -> dict:
+    """Use the configured Edge/Chrome path consistently for login, checks and uploads."""
+    options = {"headless": headless}
+    browser_path = Path(LOCAL_CHROME_PATH) if LOCAL_CHROME_PATH else None
+    if browser_path and browser_path.is_file():
+        options["executable_path"] = str(browser_path)
+    if YT_PROXY:
+        options["proxy"] = {"server": YT_PROXY}
+    return options
+
+
+def _has_saved_youtube_session(account_file) -> bool:
+    """Reject empty/expired state without depending on a fragile Studio URL shape."""
+    try:
+        state = json.loads(Path(account_file).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
+    return _state_has_youtube_session(state)
+
+
+def _state_has_youtube_session(state: dict) -> bool:
+    now = time.time()
+    for cookie in state.get("cookies", []):
+        domain = str(cookie.get("domain", "")).lower()
+        name = str(cookie.get("name", ""))
+        expires = float(cookie.get("expires", -1) or -1)
+        if domain.endswith("youtube.com") and name == "LOGIN_INFO" and (expires < 0 or expires > now):
+            return True
+    return False
+
+
+def _is_google_login_url(url: str) -> bool:
+    lowered = (url or "").lower()
+    return "accounts.google.com" in lowered or "/signin" in lowered
+
+
+def _is_youtube_studio_url(url: str) -> bool:
+    try:
+        return urlparse(url).hostname == "studio.youtube.com"
+    except ValueError:
+        return False
+
+
+async def _close_browser(browser) -> None:
+    try:
+        await asyncio.wait_for(browser.close(), timeout=10)
+    except Exception:
+        pass
+
+
 async def cookie_auth(account_file) -> bool:
-    """登录态是否仍有效：带 cookie 打开 Studio，没被踢到 Google 登录页且进入了频道页即有效。"""
+    """Check the saved session without assuming Studio always redirects to /channel/."""
+    if not _has_saved_youtube_session(account_file):
+        return False
     async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True, channel="chrome")
+        browser = await playwright.chromium.launch(**_browser_launch_options(headless=True))
         try:
             context = await browser.new_context(storage_state=account_file)
             context = await set_init_script(context)
             page = await context.new_page()
-            await page.goto(STUDIO_URL, wait_until="domcontentloaded")
-            await page.wait_for_timeout(3000)
+            page.set_default_navigation_timeout(30000)
+            await page.goto(STUDIO_URL, wait_until="domcontentloaded", timeout=30000)
+            # Studio may stay at its root dashboard instead of redirecting to /channel/<id>.
+            # Give client-side Google redirects a moment to settle before classifying it.
+            await page.wait_for_timeout(5000)
             url = page.url
-            if "accounts.google.com" in url or "/signin" in url.lower():
+            if _is_google_login_url(url):
                 return False
-            return "/channel/" in url
-        except Exception:
+            if not _is_youtube_studio_url(url):
+                return False
+            if "/channel/" in url:
+                return True
+            return await page.locator("ytcp-app, ytcp-studio-app").count() > 0
+        except PlaywrightTimeoutError as exc:
+            # A VPN/proxy hiccup should not erase a freshly saved, unexpired session.
+            youtube_logger.warning(_msg("⚠️", f"YouTube 登录检测网络超时，保留本地登录态: {exc}"))
+            return True
+        except Exception as exc:
+            youtube_logger.warning(_msg("⚠️", f"YouTube 登录检测失败: {exc}"))
             return False
         finally:
-            await browser.close()
+            await _close_browser(browser)
 
 
 async def youtube_cookie_gen(account_file, headless: bool = False):
     """交互式登录：开浏览器让用户登录 Google/YouTube，进入频道页后保存 storage_state。"""
     async with async_playwright() as playwright:
         # 登录必须显形，让用户输账号密码/二步验证
-        browser = await playwright.chromium.launch(headless=False, channel="chrome")
+        browser = await playwright.chromium.launch(**_browser_launch_options(headless=False))
         context = await browser.new_context()
         context = await set_init_script(context)
         page = await context.new_page()
@@ -89,7 +164,7 @@ async def youtube_cookie_gen(account_file, headless: bool = False):
             youtube_logger.success(_msg("✅", f"YouTube 登录态已保存: {account_file}"))
         else:
             youtube_logger.error(_msg("😵", "等待登录超时，未保存登录态"))
-        await browser.close()
+        await _close_browser(browser)
         return _build_login_result(ok, "logged_in" if ok else "timeout",
                                    "登录成功" if ok else "登录超时", account_file, page.url)
 
@@ -154,6 +229,158 @@ async def _click_if_present(page: Page, selector: str, timeout: int = 4000) -> b
         return False
 
 
+async def _open_upload_dialog(page: Page):
+    """Enter Studio through its current upload button and return the video file input.
+
+    The legacy youtube.com/upload route now lands on the Content page. Selecting the
+    first file input there creates a 0% draft without opening the metadata dialog.
+    """
+    await page.goto(STUDIO_URL, wait_until="domcontentloaded", timeout=60000)
+    await page.wait_for_timeout(3000)
+    if _is_google_login_url(page.url):
+        raise RuntimeError("YouTube 登录态失效，请重新执行 login")
+    if not _is_youtube_studio_url(page.url):
+        raise RuntimeError(f"未能进入 YouTube Studio，当前页面: {page.url}")
+
+    # New/updated channels can show a warm-welcome overlay over the upload button.
+    await _click_if_present(page, WELCOME_CONTINUE_SELECTOR, 3000)
+    upload_button = page.locator(UPLOAD_BUTTON_SELECTOR).first
+    await upload_button.wait_for(state="visible", timeout=30000)
+    await upload_button.click()
+
+    dialog = page.locator(UPLOAD_DIALOG_SELECTOR).first
+    await dialog.wait_for(state="visible", timeout=30000)
+    file_input = dialog.locator("input[type='file']").first
+    await file_input.wait_for(state="attached", timeout=30000)
+    return file_input
+
+
+async def _first_visible(page: Page, selectors: tuple[str, ...]):
+    for selector in selectors:
+        items = page.locator(selector)
+        for index in range(await items.count()):
+            item = items.nth(index)
+            try:
+                if await item.is_visible():
+                    return item
+            except Exception:
+                continue
+    return None
+
+
+def _schedule_date_text(value) -> str:
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    return f"{months[value.month - 1]} {value.day}, {value.year}"
+
+
+def _schedule_time_text(value) -> str:
+    hour = value.hour % 12 or 12
+    suffix = "AM" if value.hour < 12 else "PM"
+    return f"{hour}:{value.minute:02d} {suffix}"
+
+
+async def _set_schedule(page: Page, publish_date) -> None:
+    """Select and verify YouTube Studio's scheduled-publication controls."""
+    schedule_toggle = await _first_visible(page, (
+        "#schedule-radio-button",
+        "tp-yt-paper-radio-button[name='SCHEDULE']",
+        "[name='SCHEDULE']",
+        "ytcp-visibility-scheduler ytcp-icon-button",
+    ))
+    if schedule_toggle is None:
+        for label in ("Schedule", "定时发布", "安排时间"):
+            candidates = page.get_by_text(label, exact=True)
+            for index in range(await candidates.count()):
+                candidate = candidates.nth(index)
+                if await candidate.is_visible():
+                    schedule_toggle = candidate
+                    break
+            if schedule_toggle is not None:
+                break
+    if schedule_toggle is None:
+        raise RuntimeError("未找到 YouTube Schedule 控件，已停止以避免立即发布")
+
+    await schedule_toggle.click()
+    await page.wait_for_timeout(800)
+    picker = await _first_visible(page, ("ytcp-visibility-scheduler ytcp-datetime-picker", "ytcp-datetime-picker"))
+    if picker is None:
+        raise RuntimeError("YouTube 定时日期控件没有展开，已停止以避免立即发布")
+
+    expected_date = _schedule_date_text(publish_date)
+    date_trigger = await _first_visible(page, ("#datepicker-trigger", "ytcp-datetime-picker ytcp-dropdown-trigger"))
+    if date_trigger is None:
+        raise RuntimeError("未找到 YouTube 定时日期选择器")
+    await date_trigger.click()
+    date_input = await _first_visible(page, (
+        "ytcp-date-picker input",
+        "ytcp-date-picker tp-yt-paper-input input",
+        "tp-yt-paper-dialog input.tp-yt-paper-input",
+    ))
+    if date_input is None:
+        raise RuntimeError("未找到 YouTube 定时日期输入框")
+    await date_input.fill(expected_date)
+    await date_input.press("Enter")
+    await page.wait_for_timeout(500)
+
+    expected_time_12 = _schedule_time_text(publish_date)
+    expected_time_24 = f"{publish_date.hour:02d}:{publish_date.minute:02d}"
+    time_trigger = await _first_visible(page, ("#time-of-day-trigger", ".scheduled-info-container .ytcp-dropdown-trigger"))
+    if time_trigger is not None:
+        await time_trigger.click()
+        await page.wait_for_timeout(300)
+        menu_items = page.locator("tp-yt-paper-item:visible")
+        selected = False
+        for index in range(await menu_items.count()):
+            item = menu_items.nth(index)
+            text = (await item.inner_text()).strip()
+            if text in {expected_time_12, expected_time_24}:
+                await item.click()
+                selected = True
+                break
+        if not selected:
+            await page.keyboard.press("Escape")
+            time_trigger = None
+
+    if time_trigger is None:
+        time_input = await _first_visible(page, (
+            "ytcp-datetime-picker input[aria-label*='Time']",
+            "ytcp-datetime-picker input[aria-label*='时间']",
+            ".scheduled-info-container.ytcp-datetime-picker input",
+            "ytcp-datetime-picker input",
+        ))
+        if time_input is None:
+            raise RuntimeError("未找到 YouTube 定时发布的时间控件")
+        await time_input.fill(expected_time_24)
+        await time_input.press("Enter")
+        await page.wait_for_timeout(500)
+
+    # Read back both controls before allowing the final Schedule button.
+    picker_text = (await picker.inner_text()).strip()
+    input_values = []
+    inputs = picker.locator("input")
+    for index in range(await inputs.count()):
+        try:
+            input_values.append(await inputs.nth(index).input_value())
+        except Exception:
+            pass
+    observed = " ".join([picker_text, *input_values])
+    month_tokens = {
+        str(publish_date.month), f"{publish_date.month:02d}", f"{publish_date.month}月",
+        _schedule_date_text(publish_date).split()[0],
+    }
+    date_ok = (
+        str(publish_date.year) in observed
+        and str(publish_date.day) in observed
+        and any(token in observed for token in month_tokens)
+    )
+    time_ok = expected_time_24 in observed or expected_time_12 in observed
+    if not date_ok or not time_ok:
+        raise RuntimeError(
+            f"YouTube 定时时间回读不一致，期望 {publish_date:%Y-%m-%d %H:%M}，页面显示 {observed[:160]}"
+        )
+    youtube_logger.info(_msg("🕒", f"定时时间已核对: {publish_date:%Y-%m-%d %H:%M}"))
+
+
 async def _wait_upload_complete(page: Page, max_polls: int = 360) -> bool:
     """等网页上传从 X% 跑到 100% 再发布。浏览器上传靠窗口开着才传得完，
     若上传到一半就点发布并关闭浏览器，上传会被掐断卡在中途（如 76%）。
@@ -185,7 +412,7 @@ async def _wait_upload_complete(page: Page, max_polls: int = 360) -> bool:
 class YouTubeVideo(BaseVideoUploader):
     def __init__(self, title, file_path, tags, account_file, *,
                  description="", thumbnail_path=None, playlist=None,
-                 visibility="public", debug=DEBUG_MODE, headless=False):
+                 visibility="public", publish_date=0, debug=DEBUG_MODE, headless=False):
         self.title = title
         self.file_path = str(file_path)
         self.tags = tags or []
@@ -194,29 +421,21 @@ class YouTubeVideo(BaseVideoUploader):
         self.thumbnail_path = str(thumbnail_path) if thumbnail_path else None
         self.playlist = playlist
         self.visibility = visibility if visibility in VISIBILITY else "public"
+        self.publish_date = self.validate_publish_date(publish_date)
         self.debug = debug
         self.headless = headless
 
     async def upload(self, playwright: Playwright) -> None:
-        browser = await playwright.chromium.launch(
-            headless=self.headless, channel="chrome",
-            proxy={"server": YT_PROXY} if YT_PROXY else None,
-        )
+        browser = await playwright.chromium.launch(**_browser_launch_options(headless=self.headless))
         context = await browser.new_context(storage_state=self.account_file)
         context = await set_init_script(context)
         page = await context.new_page()
         page.set_default_timeout(60000)
 
         youtube_logger.info(_msg("🎬", f"开始上传: {Path(self.file_path).name}"))
-        await page.goto(UPLOAD_URL, wait_until="domcontentloaded")
-        await page.wait_for_timeout(3000)
-        if "accounts.google.com" in page.url or "signin" in page.url.lower():
-            await browser.close()
-            raise RuntimeError("YouTube 登录态失效，请重新执行 login")
-
-        # 1) 选择视频文件
-        file_input = page.locator('input[type="file"]').first
-        await file_input.wait_for(state="attached", timeout=60000)
+        # 1) 从 Studio 当前入口打开真正的上传对话框，再选择视频文件。
+        # 不再使用旧的 youtube.com/upload 路径，避免创建卡在 0% 的空草稿。
+        file_input = await _open_upload_dialog(page)
         await file_input.set_input_files(self.file_path)
 
         # 2) 等详情对话框
@@ -295,9 +514,16 @@ class YouTubeVideo(BaseVideoUploader):
                 await page.wait_for_timeout(1200)
             await page.wait_for_timeout(1000)
 
-        # 10) 可见性
-        youtube_logger.info(_msg("🌐", f"设置可见性 = {self.visibility}"))
-        await _click_if_present(page, f"tp-yt-paper-radio-button[name='{VISIBILITY[self.visibility]}']", 10000)
+        # 10) 可见性 / 定时发布。定时模式必须回读日期和时间一致后才能继续。
+        if self.publish_date:
+            youtube_logger.info(_msg("🕒", f"设置定时发布 = {self.publish_date:%Y-%m-%d %H:%M}"))
+            await _set_schedule(page, self.publish_date)
+        else:
+            youtube_logger.info(_msg("🌐", f"设置可见性 = {self.visibility}"))
+            if not await _click_if_present(
+                page, f"tp-yt-paper-radio-button[name='{VISIBILITY[self.visibility]}']", 10000
+            ):
+                raise RuntimeError(f"未找到 YouTube 可见性选项: {self.visibility}")
 
         # 10.5) 关键：等上传真正传完再发布。浏览器上传靠窗口开着传，
         #       传到一半就点发布+关浏览器 = 上传被掐断卡在中途（如 76%）。
@@ -318,7 +544,8 @@ class YouTubeVideo(BaseVideoUploader):
             except Exception:
                 pass
             await _click_if_present(page, "ytcp-button:has-text('Close'), ytcp-button:has-text('关闭'), #close-button", 8000)
-            youtube_logger.success(_msg("🥳", f"发布完成（{self.visibility}）{(' ' + video_url) if video_url else ''}"))
+            outcome = f"scheduled {self.publish_date:%Y-%m-%d %H:%M}" if self.publish_date else self.visibility
+            youtube_logger.success(_msg("🥳", f"发布完成（{outcome}）{(' ' + video_url) if video_url else ''}"))
 
         # 刷新 cookie
         try:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import stat
@@ -16,6 +17,9 @@ GITHUB_RELEASE_API = "https://api.github.com/repos/biliup/biliup/releases/latest
 
 
 def get_biliup_runtime_root() -> Path:
+    configured_root = os.getenv("SAU_BILIUP_ROOT", "").strip()
+    if configured_root:
+        return Path(configured_root).expanduser()
     return Path.home() / ".social-auto-upload" / "tools" / "biliup"
 
 
@@ -122,7 +126,9 @@ def _pick_executable(extract_root: Path) -> Path:
 
 def download_biliup_asset(release: dict, destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="biliup-download-") as temp_dir:
+    # Keep the archive and extraction beside the configured runtime. The system
+    # drive can be nearly full even when the selected data drive has space.
+    with tempfile.TemporaryDirectory(prefix="biliup-download-", dir=destination.parent) as temp_dir:
         temp_root = Path(temp_dir)
         archive_path = temp_root / release["asset_name"]
         with requests.get(release["asset_url"], stream=True, timeout=120) as response:

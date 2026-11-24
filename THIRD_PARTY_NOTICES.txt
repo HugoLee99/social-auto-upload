@@ -1,0 +1,13 @@
+白日梦内容分发助手 · Third-Party Notices
+
+This product contains and is derived from social-auto-upload,
+Copyright (c) 2023 dreammis, licensed under the MIT License.
+The complete MIT license text is included in LICENSE.txt.
+
+The packaged application also includes open-source runtime dependencies,
+including Python, Flask, Patchright, NumPy, OpenCV, Pillow and their transitive
+dependencies. Their license and notice files remain included alongside the
+corresponding packaged components where provided by those projects.
+
+Product branding, original UI additions and product-specific packaging do not
+remove or replace any upstream copyright or license notice.

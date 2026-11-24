@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,18 +22,43 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import requests
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 
-ROOT = Path(__file__).resolve().parent
+IS_FROZEN = bool(getattr(sys, "frozen", False))
+RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+
+
+def default_data_root() -> Path:
+    configured = os.getenv("SAU_DATA_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if not IS_FROZEN:
+        return Path(__file__).resolve().parent
+    if sys.platform == "win32":
+        base = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData/Local"))
+        return base / "DaydreamDispatch"
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Application Support/DaydreamDispatch"
+    return Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local/share")) / "daydream-dispatch"
+
+
+ROOT = default_data_root()
+ROOT.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("SAU_DATA_DIR", str(ROOT))
+bundled_browsers = RESOURCE_ROOT / "ms-playwright"
+if IS_FROZEN and bundled_browsers.exists():
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(bundled_browsers))
 RUNTIME = ROOT / ".local" / "workbench"
 UPLOADS = RUNTIME / "uploads"
 LOGS = RUNTIME / "logs"
 REGISTRY_FILE = RUNTIME / "accounts.json"
 TASKS_FILE = RUNTIME / "tasks.json"
-FRONTEND_DIST = ROOT / "sau_frontend" / "dist"
+FRONTEND_DIST = RESOURCE_ROOT / "sau_frontend" / "dist"
 CHECK_INTERVAL = max(600, int(os.getenv("SAU_CHECK_INTERVAL", "600")))
+WORKBENCH_PORT = int(os.getenv("SAU_PORT", "5409"))
 SUPPORTED_PLATFORMS = {
     "xiaohongshu": {"name": "小红书", "accent": "red", "schedule": True},
     "douyin": {"name": "抖音", "accent": "cyan", "schedule": True},
@@ -41,6 +67,20 @@ SUPPORTED_PLATFORMS = {
     "youtube": {"name": "YouTube", "accent": "red", "schedule": True},
     "instagram": {"name": "Instagram", "accent": "purple", "schedule": False},
 }
+AI_PROVIDERS = {
+    "deepseek": {
+        "name": "DeepSeek",
+        "default_model": "deepseek-flash",
+        "models": ["deepseek-flash", "deepseek-v4-pro"],
+    },
+    "openai": {
+        "name": "OpenAI",
+        "default_model": "gpt-6-astra",
+        "models": ["gpt-6-astra", "gpt-5.5"],
+    },
+}
+AI_ACTIONS = {"generate_all", "optimize_title", "optimize_description", "optimize_tags"}
+AI_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
 ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 ALLOWED_VIDEO = {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}
 ALLOWED_IMAGE = {".jpg", ".jpeg", ".png", ".webp"}
@@ -112,7 +152,143 @@ def validate_account(platform: str, alias: str) -> None:
 
 
 def cli_command(*parts: str) -> list[str]:
-    return [sys.executable, str(ROOT / "sau_cli.py"), *parts]
+    if IS_FROZEN:
+        cli_name = "DaydreamCLI.exe" if sys.platform == "win32" else "DaydreamCLI"
+        return [str(Path(sys.executable).with_name(cli_name)), *parts]
+    return [sys.executable, str(RESOURCE_ROOT / "sau_cli.py"), *parts]
+
+
+def _bounded_text(value: Any, limit: int) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def build_ai_copy_prompt(action: str, brief: str, title: str, description: str, tags: str) -> str:
+    action_instruction = {
+        "generate_all": "根据创作意图生成完整的标题、正文描述和标签。",
+        "optimize_title": "只重点优化标题；描述和标签保持原意并原样返回。",
+        "optimize_description": "只重点优化正文描述；标题和标签保持原意并原样返回。",
+        "optimize_tags": "只重点优化标签；标题和正文描述保持原意并原样返回。",
+    }[action]
+    return (
+        f"任务：{action_instruction}\n"
+        f"创作意图：{brief or '未单独填写，请根据现有内容判断'}\n"
+        f"现有标题：{title or '未填写'}\n"
+        f"现有正文：{description or '未填写'}\n"
+        f"现有标签：{tags or '未填写'}\n\n"
+        "写作要求：中文自然、具体、不过度营销；不得虚构亲身体验、效果、数据或事实。"
+        "标题不超过100字；正文适合短视频多平台发布；标签提供3到8个，不带#号。"
+        "只返回一个JSON对象，严格包含 title、description、tags 三个字符串字段，"
+        "tags 使用英文逗号分隔。"
+    )
+
+
+def _request_ai_json(url: str, api_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        response = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=(15, 120),
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"无法连接模型服务：{exc.__class__.__name__}") from exc
+    if response.status_code >= 400:
+        try:
+            message = str(response.json().get("error", {}).get("message", "")).strip()
+        except (ValueError, AttributeError):
+            message = ""
+        if response.status_code in {401, 403}:
+            raise RuntimeError("API Key 无效、无权限，或该模型尚未开通")
+        raise RuntimeError(message[:240] or f"模型服务返回 HTTP {response.status_code}")
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise RuntimeError("模型服务没有返回有效 JSON") from exc
+
+
+def _extract_openai_text(payload: dict[str, Any]) -> str:
+    if payload.get("output_text"):
+        return str(payload["output_text"])
+    for item in payload.get("output", []):
+        for content in item.get("content", []):
+            if content.get("type") == "output_text" and content.get("text"):
+                return str(content["text"])
+    return ""
+
+
+def _parse_ai_copy(text: str) -> dict[str, str]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start < 0 or end <= start:
+        raise RuntimeError("模型没有返回可识别的文案 JSON")
+    try:
+        result = json.loads(cleaned[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("模型返回的文案格式无法解析，请重试") from exc
+    raw_tags = result.get("tags", "")
+    if isinstance(raw_tags, list):
+        raw_tags = ",".join(str(item) for item in raw_tags)
+    tags = []
+    for raw_tag in re.split(r"[,，\n]+", str(raw_tags)):
+        tag = raw_tag.strip().lstrip("#")[:30]
+        if tag and tag not in tags:
+            tags.append(tag)
+    return {
+        "title": _bounded_text(result.get("title"), 100),
+        "description": _bounded_text(result.get("description"), 3000),
+        "tags": ", ".join(tags[:8]),
+    }
+
+
+def generate_ai_copy(provider: str, api_key: str, model: str, action: str,
+                     brief: str, title: str, description: str, tags: str) -> dict[str, str]:
+    if provider not in AI_PROVIDERS:
+        raise ValueError("请选择 OpenAI 或 DeepSeek")
+    if not api_key or len(api_key) > 512:
+        raise ValueError("请填写有效的 API Key")
+    if not AI_MODEL_RE.fullmatch(model):
+        raise ValueError("模型名称格式无效")
+    if action not in AI_ACTIONS:
+        raise ValueError("不支持这个 AI 文案操作")
+    brief = _bounded_text(brief, 4000)
+    title = _bounded_text(title, 200)
+    description = _bounded_text(description, 5000)
+    tags = _bounded_text(tags, 1000)
+    if not any((brief, title, description, tags)):
+        raise ValueError("请先填写创作意图或至少一个现有文案字段")
+    prompt = build_ai_copy_prompt(action, brief, title, description, tags)
+    system_prompt = (
+        "你是内容创作者的中文文案编辑。输出必须是JSON，不要使用Markdown。"
+        "忠于用户提供的信息，不得编造未提供的体验、数据、身份或产品效果。"
+    )
+    if provider == "openai":
+        payload = _request_ai_json(
+            "https://api.openai.com/v1/responses",
+            api_key,
+            {"model": model, "instructions": system_prompt, "input": prompt, "store": False},
+        )
+        text = _extract_openai_text(payload)
+    else:
+        payload = _request_ai_json(
+            "https://api.deepseek.com/chat/completions",
+            api_key,
+            {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "response_format": {"type": "json_object"},
+                "stream": False,
+            },
+        )
+        choices = payload.get("choices") or []
+        text = str(choices[0].get("message", {}).get("content", "")) if choices else ""
+    if not text.strip():
+        raise RuntimeError("模型没有返回文案内容")
+    return _parse_ai_copy(text)
 
 
 def discover_accounts() -> None:
@@ -199,9 +375,10 @@ def monitor_accounts() -> None:
         stop_monitor.wait(max(0, CHECK_INTERVAL - elapsed))
 
 
-def watch_login(key: str, process: subprocess.Popen, log_handle) -> None:
+def watch_login(key: str, process: subprocess.Popen, log_handle=None) -> None:
     process.wait()
-    log_handle.close()
+    if log_handle is not None:
+        log_handle.close()
     with registry_lock:
         login_processes.pop(key, None)
     platform, alias = key.split(":", 1)
@@ -228,7 +405,13 @@ def build_publish_command(task: dict[str, Any], target: dict[str, str]) -> list[
     cmd = cli_command(platform, "upload-video", "--account", alias, "--file", task["video"],
                       "--title", task["title"], "--desc", task.get("description", ""),
                       "--tags", task.get("tags", ""))
-    cover = task.get("cover") or task.get("cover_portrait")
+    # 小红书只使用工作台里的 3:4 竖屏封面，不能被通用横屏封面覆盖。
+    # 其他平台保持原有兼容逻辑：优先通用封面，缺失时回退竖屏封面。
+    cover = (
+        task.get("cover_portrait")
+        if platform == "xiaohongshu"
+        else task.get("cover") or task.get("cover_portrait")
+    )
     if cover:
         cmd.extend(["--thumbnail", cover])
     if task.get("cover_portrait") and platform in {"douyin", "tencent"}:
@@ -239,7 +422,8 @@ def build_publish_command(task: dict[str, Any], target: dict[str, str]) -> list[
         cmd.extend(["--tid", str(task.get("bilibili_tid", 21))])
     if platform == "youtube":
         cmd.extend(["--visibility", task.get("youtube_visibility", "public")])
-    cmd.append("--headed" if task.get("headed", False) else "--headless")
+    if platform != "bilibili":
+        cmd.append("--headed" if task.get("headed", False) else "--headless")
     return cmd
 
 
@@ -406,11 +590,14 @@ def verify_douyin_task(task_id: str, target: dict[str, str]) -> None:
     checked_at = utc_stamp()
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=True,
-                executable_path="C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            )
+            from conf import LOCAL_CHROME_PATH
+            launch_kwargs: dict[str, Any] = {
+                "headless": True,
+                "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            }
+            if LOCAL_CHROME_PATH:
+                launch_kwargs["executable_path"] = LOCAL_CHROME_PATH
+            browser = playwright.chromium.launch(**launch_kwargs)
             context = browser.new_context(storage_state=str(account_file))
             page = context.new_page()
             page.goto("https://creator.douyin.com/creator-micro/content/manage",
@@ -469,11 +656,14 @@ def open_review_browser(platform: str, alias: str) -> None:
     account_file = ROOT / "cookies" / f"douyin_{alias}.json"
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(
-                headless=False,
-                executable_path="C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
-                args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            )
+            from conf import LOCAL_CHROME_PATH
+            launch_kwargs: dict[str, Any] = {
+                "headless": False,
+                "args": ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
+            }
+            if LOCAL_CHROME_PATH:
+                launch_kwargs["executable_path"] = LOCAL_CHROME_PATH
+            browser = playwright.chromium.launch(**launch_kwargs)
             context = browser.new_context(storage_state=str(account_file))
             page = context.new_page()
             page.goto("https://creator.douyin.com/creator-micro/content/manage",
@@ -525,7 +715,7 @@ def terminate_task_processes(task: dict[str, Any]) -> list[int]:
     return stopped
 
 
-def make_retry_draft(task: dict[str, Any]) -> dict[str, Any]:
+def make_draft_copy(task: dict[str, Any], relation_field: str) -> dict[str, Any]:
     new_id = uuid.uuid4().hex[:12]
     folder = UPLOADS / new_id
     folder.mkdir(parents=True, exist_ok=False)
@@ -542,12 +732,28 @@ def make_retry_draft(task: dict[str, Any]) -> dict[str, Any]:
         destination = folder / source.name
         shutil.copy2(source, destination)
         retry[field] = str(destination)
-    for field in ("started_at", "finished_at", "message", "verification"):
+    for field in (
+        "started_at", "finished_at", "message", "verification", "cancel_requested",
+        "stopped_processes", "retry_of", "copied_from",
+    ):
         retry.pop(field, None)
     retry.update(
-        id=new_id, status="draft", created_at=utc_stamp(), results=[], retry_of=task["id"],
+        id=new_id, status="draft", created_at=utc_stamp(), results=[],
     )
+    retry[relation_field] = task["id"]
     return retry
+
+
+def make_retry_draft(task: dict[str, Any]) -> dict[str, Any]:
+    return make_draft_copy(task, "retry_of")
+
+
+def make_preset_draft(task: dict[str, Any]) -> dict[str, Any]:
+    preset = make_draft_copy(task, "copied_from")
+    # A previous scheduled time may already be invalid. Reusing the template
+    # always requires the creator to choose the new publish time explicitly.
+    preset["schedule"] = ""
+    return preset
 
 
 app = Flask(__name__, static_folder=str(FRONTEND_DIST), static_url_path="")
@@ -563,6 +769,32 @@ def health():
 @app.get("/api/platforms")
 def platforms():
     return jsonify(SUPPORTED_PLATFORMS)
+
+
+@app.get("/api/ai/providers")
+def ai_providers():
+    return jsonify(AI_PROVIDERS)
+
+
+@app.post("/api/ai/generate")
+def ai_generate():
+    data = request.get_json(silent=True) or {}
+    try:
+        result = generate_ai_copy(
+            provider=str(data.get("provider", "")),
+            api_key=str(data.get("api_key", "")),
+            model=str(data.get("model", "")),
+            action=str(data.get("action", "")),
+            brief=str(data.get("brief", "")),
+            title=str(data.get("title", "")),
+            description=str(data.get("description", "")),
+            tags=str(data.get("tags", "")),
+        )
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+    except RuntimeError as exc:
+        return jsonify(error=str(exc)), 502
 
 
 @app.get("/api/accounts")
@@ -625,15 +857,44 @@ def login_account(platform: str, alias: str):
                                   "message": "等待登录", "last_checked": None, "latency_ms": None})
         if key in login_processes:
             return jsonify(error="这个账号的登录窗口已经打开"), 409
-        log_path = LOGS / f"login-{platform}-{alias}.log"
-        log_handle = log_path.open("a", encoding="utf-8")
         flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
         login_parts = [platform, "login", "--account", alias]
         if platform != "bilibili":
             login_parts.append("--headed")
-        process = subprocess.Popen(cli_command(*login_parts),
-                                   cwd=ROOT, stdout=log_handle, stderr=subprocess.STDOUT,
-                                   creationflags=flags)
+        log_handle = None
+        if platform == "bilibili" and os.name == "nt":
+            # biliup renders its QR code in the terminal and refuses to run when
+            # stdin/stdout are redirected. cmd /k gives it a real interactive
+            # Windows terminal and deliberately keeps the window open if setup
+            # or login fails, so the user can read the error instead of seeing
+            # the console flash and disappear.
+            process = subprocess.Popen(
+                ["cmd.exe", "/d", "/k", *cli_command(*login_parts)],
+                cwd=ROOT,
+                creationflags=flags,
+            )
+        elif platform == "bilibili" and sys.platform == "darwin":
+            script_path = RUNTIME / f"login-bilibili-{alias}.command"
+            command = " ".join(shlex.quote(part) for part in cli_command(*login_parts))
+            script_path.write_text(
+                "#!/bin/zsh\n"
+                f"cd {shlex.quote(str(ROOT))}\n"
+                f"{command}\n"
+                "echo\nread -k 1 '?登录完成。按任意键关闭窗口…'\n",
+                encoding="utf-8",
+            )
+            script_path.chmod(0o700)
+            process = subprocess.Popen(["open", "-a", "Terminal", str(script_path)], cwd=ROOT)
+        else:
+            log_path = LOGS / f"login-{platform}-{alias}.log"
+            log_handle = log_path.open("a", encoding="utf-8")
+            process = subprocess.Popen(
+                cli_command(*login_parts),
+                cwd=ROOT,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                creationflags=flags,
+            )
         login_processes[key] = process
         accounts[key].update(status="login_required", message="登录窗口已打开，请在窗口中完成登录")
         save_json(REGISTRY_FILE, accounts)
@@ -846,6 +1107,22 @@ def retry_task_draft(task_id: str):
                    message="旧流程已停止，重试草稿已生成；再次确认后才会发布")
 
 
+@app.post("/api/tasks/<task_id>/duplicate")
+def duplicate_task_as_preset(task_id: str):
+    with task_lock:
+        task = tasks.get(task_id)
+        if not task:
+            return jsonify(error="任务不存在"), 404
+        preset = make_preset_draft(task)
+        tasks[preset["id"]] = preset
+        save_json(TASKS_FILE, tasks)
+    return jsonify(
+        ok=True,
+        task=preset,
+        message="已复用上次发布设置并生成待确认草稿；请重新选择发布时间后再发布",
+    )
+
+
 @app.delete("/api/tasks/<task_id>")
 def delete_task(task_id: str):
     with task_lock:
@@ -879,8 +1156,9 @@ def main() -> None:
     mark_interrupted_tasks()
     threading.Thread(target=monitor_accounts, name="account-monitor", daemon=True).start()
     if os.getenv("SAU_OPEN_BROWSER") == "1":
-        threading.Timer(1.2, lambda: webbrowser.open("http://127.0.0.1:5409")).start()
-    app.run(host="127.0.0.1", port=5409, debug=False, threaded=True)
+        url = f"http://127.0.0.1:{WORKBENCH_PORT}"
+        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+    app.run(host="127.0.0.1", port=WORKBENCH_PORT, debug=False, threaded=True)
 
 
 if __name__ == "__main__":

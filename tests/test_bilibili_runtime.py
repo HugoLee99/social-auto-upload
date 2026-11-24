@@ -5,11 +5,16 @@ from unittest.mock import Mock, patch
 from uploader.bilibili_uploader.runtime import (
     build_biliup_runtime_path,
     ensure_biliup_binary,
+    get_biliup_runtime_root,
     run_biliup_command,
 )
 
 
 class BiliupRuntimeTests(unittest.TestCase):
+    @patch.dict("os.environ", {"SAU_BILIUP_ROOT": "D:/sau-tools/biliup"})
+    def test_runtime_root_can_be_moved_off_system_drive(self):
+        self.assertEqual(get_biliup_runtime_root(), Path("D:/sau-tools/biliup"))
+
     def test_build_biliup_runtime_path_returns_platform_path(self):
         path = build_biliup_runtime_path("Windows")
         self.assertTrue(str(path).endswith("biliup.exe"))

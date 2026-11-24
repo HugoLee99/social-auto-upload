@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title Setup SAU Creator Workbench
+title Setup Daydream Dispatch
 
 if not exist ".venv\Scripts\python.exe" (
   echo [ERROR] .venv is missing. Create the project environment first.
@@ -24,7 +24,7 @@ if errorlevel 1 goto :frontend_error
 popd
 
 echo.
-echo Setup complete. Double-click start-workbench.bat next time.
+echo Daydream Dispatch setup is complete. Double-click start-workbench.bat next time.
 pause
 exit /b 0
 

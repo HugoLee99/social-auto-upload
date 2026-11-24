@@ -23,6 +23,12 @@ def register(platform_parsers):
     for action_name in ("login", "check"):
         action_parser = bilibili_actions.add_parser(action_name, help=f"Bilibili {action_name}")
         action_parser.add_argument("--account", required=True, help="Bilibili user-defined account_name")
+        if action_name == "login":
+            action_parser.add_argument(
+                "--headed",
+                action="store_true",
+                help="Compatibility flag; Bilibili login always uses the interactive terminal QR code",
+            )
 
     bilibili_upload_video_parser = bilibili_actions.add_parser("upload-video", help="Upload one video to Bilibili")
     bilibili_upload_video_parser.add_argument("--account", required=True, help="Bilibili user-defined account_name")

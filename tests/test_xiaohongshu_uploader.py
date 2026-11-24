@@ -89,6 +89,95 @@ class RecordingPage:
         return self.locators[selector]
 
 
+class CoverLocator:
+    def __init__(self, name, *, count=1, visible=True, backgrounds=None):
+        self.name = name
+        self._count = count
+        self._visible = visible
+        self._backgrounds = list(backgrounds or [])
+        self.actions = []
+        self.children = {}
+        self.items = []
+
+    @property
+    def first(self):
+        return self
+
+    def locator(self, selector):
+        return self.children[selector]
+
+    def get_by_text(self, text, exact=False):
+        return self.children[f"text:{text}"]
+
+    def nth(self, index):
+        return self.items[index]
+
+    async def count(self):
+        return len(self.items) if self.items else self._count
+
+    async def is_visible(self):
+        return self._visible
+
+    async def click(self, **kwargs):
+        self.actions.append(("click", kwargs))
+
+    async def wait_for(self, **kwargs):
+        self.actions.append(("wait_for", kwargs))
+
+    async def scroll_into_view_if_needed(self, **kwargs):
+        self.actions.append(("scroll", kwargs))
+
+    async def hover(self, **kwargs):
+        self.actions.append(("hover", kwargs))
+
+    async def evaluate(self, script):
+        self.actions.append(("evaluate", script))
+        return self._backgrounds.pop(0)
+
+    async def set_input_files(self, path):
+        self.actions.append(("set_input_files", path))
+
+
+class CoverPage:
+    THUMBNAIL_SELECTOR = (
+        ".cover-plugin-preview .cover > .default.column:not(.artistic-bg), "
+        ".default--ai-cover-layout, "
+        ".cover-plugin-preview .default:not(.artistic-bg)"
+    )
+
+    def __init__(self):
+        self.keyboard = RecordingKeyboard()
+        self.waits = []
+        self.guide_confirm = CoverLocator("guide-confirm")
+        self.guide_close = CoverLocator("guide-close", count=0, visible=False)
+        self.thumbnail = CoverLocator(
+            "thumbnail", backgrounds=["url(old-cover)", "url(new-cover)"]
+        )
+        self.edit_entry = CoverLocator("edit-entry")
+        self.file_input = CoverLocator("file-input")
+        self.done = CoverLocator("done")
+        self.done_items = CoverLocator("done-items")
+        self.done_items.items = [self.done]
+        self.modal = CoverLocator("modal")
+        self.modal.children = {
+            'input[type="file"][accept*="image"]': self.file_input,
+            "text:完成": self.done_items,
+        }
+        self.locators = {
+            ".pk-cover-guide-confirm": self.guide_confirm,
+            ".pk-cover-guide-close": self.guide_close,
+            self.THUMBNAIL_SELECTOR: self.thumbnail,
+            ".cover-edit-entry-text": self.edit_entry,
+            ".main-cover-editor-modal": self.modal,
+        }
+
+    def locator(self, selector):
+        return self.locators[selector]
+
+    async def wait_for_timeout(self, timeout):
+        self.waits.append(timeout)
+
+
 class XiaohongshuUploaderTests(unittest.TestCase):
     def test_creator_urls_keep_xiaohongshu_domain_by_default(self):
         with patch.dict(os.environ, {"SAU_XHS_CREATOR_BASE_URL": ""}):
@@ -203,6 +292,34 @@ class XiaohongshuUploaderTests(unittest.TestCase):
 
         self.assertTrue(app.file_path.endswith("demo.mp4"))
         self.assertTrue(app.thumbnail_path.endswith("demo.png"))
+
+    def test_video_set_thumbnail_uses_current_cover_editor_flow(self):
+        app = xhs_main.XiaoHongShuVideo(
+            title="demo",
+            file_path="demo.mp4",
+            tags=[],
+            publish_date=0,
+            account_file="account.json",
+        )
+        page = CoverPage()
+
+        # 该项目的日志 sink 在部分 Windows 终端中会阻塞，单测只验证页面交互。
+        with patch.object(xhs_main.xiaohongshu_logger, "info"):
+            with patch.object(xhs_main.xiaohongshu_logger, "success"):
+                with patch.object(xhs_main.xiaohongshu_logger, "warning"):
+                    coroutine = app.set_thumbnail(page, "cover.png")
+                    with self.assertRaises(StopIteration):
+                        coroutine.send(None)
+
+        self.assertEqual(page.guide_confirm.actions[0][0], "click")
+        self.assertIn("hover", [action[0] for action in page.thumbnail.actions])
+        self.assertEqual(page.edit_entry.actions[-1][0], "click")
+        self.assertIn(("set_input_files", "cover.png"), page.file_input.actions)
+        self.assertEqual(page.done.actions[-1][0], "click")
+        self.assertIn(
+            ("wait_for", {"state": "hidden", "timeout": 15000}),
+            page.modal.actions,
+        )
 
     def test_note_uploader_exists_and_validates_required_fields(self):
         note_cls = getattr(xhs_main, "XiaoHongShuNote")

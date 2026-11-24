@@ -1,4 +1,6 @@
-# SAU Creator Workbench
+# 白日梦内容分发助手 · Daydream Dispatch
+
+一份内容，抵达每个舞台。白日梦基于 social-auto-upload 的自动化能力，为创作者提供简洁的多平台内容分发控制台。
 
 ## 一键启动
 

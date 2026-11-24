@@ -84,10 +84,10 @@ async def upload_youtube_video(request: YouTubeVideoUploadRequest) -> Path:
         thumbnail_path=str(request.thumbnail_file) if request.thumbnail_file else None,
         playlist=request.playlist,
         visibility=request.visibility,
+        publish_date=request.schedule,
         debug=request.debug,
         headless=request.headless,
     )
-    app.set_publish_date(request.schedule)
     await app.main()
     return account_file
 

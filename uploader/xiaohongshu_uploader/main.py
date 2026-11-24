@@ -598,48 +598,63 @@ class XiaoHongShuVideo(XiaoHongShuBaseUploader):
 
         # 封面设置为增强步骤：失败时记 warning 跳过、继续发布（用视频首帧兜底）。
         try:
-            # 发布页封面区域内嵌，点击 div.upload-cover 打开封面弹窗（d-modal）。
-            cover_section = page.locator("text=设置封面").first
-            try:
-                await cover_section.scroll_into_view_if_needed(timeout=5000)
-            except Exception:
-                pass
-            await page.wait_for_timeout(2000)
+            # 新版页面会用“PK封面”新功能引导遮住当前封面，先把引导关闭。
+            guide_confirm = page.locator(".pk-cover-guide-confirm").first
+            guide_close = page.locator(".pk-cover-guide-close").first
+            if await guide_confirm.count() and await guide_confirm.is_visible():
+                await guide_confirm.click(timeout=3000)
+                await page.wait_for_timeout(500)
+            elif await guide_close.count() and await guide_close.is_visible():
+                await guide_close.click(timeout=3000)
+                await page.wait_for_timeout(500)
 
-            # 1. 点击 div.upload-cover 打开封面弹窗
-            upload_cover = page.locator("div.upload-cover").first
-            if not await upload_cover.count():
-                upload_cover = page.locator("div.cover-plugin-preview div.default.pointer").first
-            await upload_cover.click(force=True)
-            await page.wait_for_timeout(3000)
+            # 1. 新版入口只有 hover 当前主封面后才显示“编辑封面”。排除右侧智能推荐卡片。
+            thumbnail = page.locator(
+                ".cover-plugin-preview .cover > .default.column:not(.artistic-bg), "
+                ".default--ai-cover-layout, "
+                ".cover-plugin-preview .default:not(.artistic-bg)"
+            ).first
+            await thumbnail.wait_for(state="visible", timeout=10000)
+            await thumbnail.scroll_into_view_if_needed(timeout=5000)
+            previous_background = await thumbnail.evaluate(
+                "element => getComputedStyle(element).backgroundImage || element.style.backgroundImage || ''"
+            )
+            await thumbnail.hover(timeout=8000)
+            await page.wait_for_timeout(900)
 
-            # 2. 切换到「上传封面」tab（默认在「截取封面」）
-            upload_tab = page.get_by_text("上传封面", exact=True).first
-            await upload_tab.wait_for(state="visible", timeout=10000)
-            await upload_tab.click()
-            await page.wait_for_timeout(2000)
+            edit_entry = page.locator(".cover-edit-entry-text").first
+            await edit_entry.wait_for(state="visible", timeout=8000)
+            await edit_entry.click(timeout=8000)
 
-            # 3. 找到图片 file input（parent class: upload-wrapper）并上传
-            file_input = page.locator('div.upload-wrapper input[type="file"][accept*="image"]').first
-            if not await file_input.count():
-                file_input = page.locator('input[type="file"][accept*="image"]').last
+            # 2. 新版 d-design 封面编辑器不再有“上传封面”tab；图片 input 打开即存在。
+            modal = page.locator(".main-cover-editor-modal").first
+            await modal.wait_for(state="visible", timeout=10000)
+            file_input = modal.locator('input[type="file"][accept*="image"]').first
+            await file_input.wait_for(state="attached", timeout=8000)
             await file_input.set_input_files(thumbnail_path)
-            await page.wait_for_timeout(4000)  # 等图片加载+裁剪渲染
+            await page.wait_for_timeout(6000)  # 等图片上传和裁剪画布渲染
 
-            # 4. 点「确定」按钮
-            modal_footer = page.locator("div.d-modal-footer")
-            confirm = modal_footer.get_by_text("确定", exact=True).first
-            if not await confirm.count():
-                confirm = page.get_by_role("button", name="确定").first
-            await confirm.wait_for(state="visible", timeout=10000)
-            await confirm.click()
+            # 3. 新版确认按钮文字为“完成”，取弹窗里最后一个可见的同名元素。
+            done_items = modal.get_by_text("完成", exact=True)
+            done = None
+            for index in range(await done_items.count() - 1, -1, -1):
+                candidate = done_items.nth(index)
+                if await candidate.is_visible():
+                    done = candidate
+                    break
+            if done is None:
+                raise RuntimeError("封面编辑器中未找到“完成”按钮")
+            await done.scroll_into_view_if_needed(timeout=5000)
+            await done.click(timeout=8000)
+            await modal.wait_for(state="hidden", timeout=15000)
+            await page.wait_for_timeout(1200)
 
-            # 5. 等弹窗关闭
-            modal = page.locator("div.d-modal")
-            try:
-                await modal.first.wait_for(state="hidden", timeout=15000)
-            except Exception:
-                pass
+            # 4. 回读主表单缩略图；背景没有变化就不报告成功。
+            current_background = await thumbnail.evaluate(
+                "element => getComputedStyle(element).backgroundImage || element.style.backgroundImage || ''"
+            )
+            if previous_background and current_background == previous_background:
+                raise RuntimeError("封面编辑器已关闭，但主封面缩略图没有变化")
             xiaohongshu_logger.success(_msg("🥳", "封面已经设置完成"))
         except Exception as exc:
             xiaohongshu_logger.warning(_msg("🖼️", f"封面设置失败，跳过该步骤继续发布（用视频首帧）：{exc}"))

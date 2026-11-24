@@ -2,10 +2,11 @@
   <main class="workbench-shell">
     <header class="topbar">
       <div class="brand-block">
-        <div class="brand-mark">SAU</div>
-        <div>
-          <p class="eyebrow">CREATOR OPERATIONS</p>
-          <h1>发布控制台</h1>
+        <div class="brand-mark" aria-hidden="true"><span>DD</span></div>
+        <div class="brand-copy">
+          <p class="eyebrow">DAYDREAM DISPATCH</p>
+          <h1>白日梦内容分发助手</h1>
+          <small>一份内容，抵达每个舞台</small>
         </div>
       </div>
 
@@ -18,14 +19,14 @@
 
       <div class="monitor-state" :class="backendOnline ? 'online' : 'offline'">
         <i></i>
-        <div><b>{{ backendOnline ? '检测器运行中' : '检测器离线' }}</b><small>{{ monitorText }}</small></div>
+        <div><b>{{ backendOnline ? '分发引擎运行中' : '分发引擎离线' }}</b><small>{{ monitorText }}</small></div>
       </div>
     </header>
 
     <section class="workspace">
       <aside class="account-rail">
         <div class="section-heading">
-          <div><p class="eyebrow">CONNECTIONS</p><h2>账号联通</h2></div>
+          <div><p class="eyebrow">CHANNELS</p><h2>账号联通</h2></div>
           <button class="icon-button" title="添加账号" @click="showAccountForm = !showAccountForm">＋</button>
         </div>
 
@@ -66,15 +67,18 @@
           </article>
 
           <div v-if="!accounts.length" class="empty-accounts">
-            <span>∅</span><b>还没有账号</b><small>添加平台与别名后，工作台会持续检测登录状态。</small>
+            <span>＋</span><b>连接第一个创作舞台</b><small>添加平台与别名后，白日梦会持续检测登录状态。</small>
           </div>
         </div>
       </aside>
 
       <section class="composer">
         <div class="composer-head">
-          <div><p class="eyebrow">NEW DISTRIBUTION</p><h2>准备一条新内容</h2></div>
-          <div class="draft-state"><span></span>{{ currentTask ? '草稿已保存' : '本地草稿' }}</div>
+          <div><p class="eyebrow">NEW DISPATCH</p><h2>准备一条新内容</h2></div>
+          <div class="composer-actions">
+            <button v-if="lastPublishedTask" type="button" class="reuse-button" :disabled="busy" @click="reuseLastPublish">复用上次发布</button>
+            <div class="draft-state"><span></span>{{ currentTask ? '草稿已保存' : '本地草稿' }}</div>
+          </div>
         </div>
 
         <div class="compose-grid">
@@ -88,7 +92,7 @@
               </template>
               <template v-else>
                 <div class="upload-arrow">↥</div>
-                <b>放入主视频</b>
+                <b>放入今天的主视频</b>
                 <small>MP4 / MOV / WEBM，最大 4GB</small>
               </template>
             </label>
@@ -102,12 +106,12 @@
               <label class="cover-zone portrait-cover">
                 <input type="file" accept="image/png,image/jpeg,image/webp" @change="pickPortraitCover" />
                 <span class="cover-preview portrait" :style="portraitCoverUrl ? { backgroundImage: `url(${portraitCoverUrl})` } : {}">{{ portraitCoverUrl ? '' : '＋' }}</span>
-                <span><b>{{ portraitCoverFile ? portraitCoverFile.name : '添加竖屏封面' }}</b><small>建议 3:4；传给抖音、视频号，小红书可回退使用</small></span>
+                <span><b>{{ portraitCoverFile ? portraitCoverFile.name : '添加竖屏封面' }}</b><small>建议 3:4；用于抖音、视频号；小红书只使用此封面</small></span>
               </label>
             </div>
 
             <div class="target-strip">
-              <p>本次分发到</p>
+              <p>这次想抵达</p>
               <div v-if="selectedTargets.length" class="target-chips">
                 <button v-for="target in selectedTargets" :key="target.platform + target.alias" @click="toggleTarget(target)">
                   {{ platformGlyph(target.platform) }} {{ target.platform_name }} <span>×</span>
@@ -118,21 +122,61 @@
           </section>
 
           <form class="content-form" @submit.prevent="saveDraft">
-            <label class="field wide"><span>标题 <em>{{ form.title.length }}/100</em></span>
-              <input v-model="form.title" maxlength="100" placeholder="一句清楚、有力的标题" />
-            </label>
-            <label class="field wide"><span>正文描述</span>
-              <textarea v-model="form.description" rows="7" placeholder="介绍内容、补充背景，也可以先写一个通用版本…"></textarea>
-            </label>
-            <label class="field wide"><span>话题标签</span>
-              <input v-model="form.tags" placeholder="AI工具, 内容创作, 效率（用逗号分隔）" />
-            </label>
+            <section class="ai-copy-studio">
+              <header>
+                <div><p class="eyebrow">DREAM COPY</p><h3>文案助手</h3></div>
+                <span class="ai-privacy">密钥仅保留在当前标签页</span>
+              </header>
+              <div class="ai-config-grid">
+                <label><span>接口</span>
+                  <select v-model="ai.provider" @change="selectAiProvider">
+                    <option v-for="(provider, key) in aiProviders" :key="key" :value="key">{{ provider.name }}</option>
+                  </select>
+                </label>
+                <label><span>模型</span>
+                  <input v-model.trim="ai.model" list="ai-models" placeholder="选择或填写模型名称" @change="saveAiSettings" />
+                  <datalist id="ai-models"><option v-for="model in currentAiModels" :key="model" :value="model"></option></datalist>
+                </label>
+                <label class="ai-key-field"><span>API Key</span>
+                  <div><input v-model="aiApiKey" :type="showAiKey ? 'text' : 'password'" autocomplete="off" placeholder="不会写入任务或配置文件" @change="saveAiSettings" /><button type="button" @click="showAiKey = !showAiKey">{{ showAiKey ? '隐藏' : '显示' }}</button></div>
+                </label>
+              </div>
+              <label class="ai-brief"><span>告诉 AI 这条内容想讲什么</span>
+                <textarea v-model="ai.brief" rows="3" maxlength="4000" placeholder="例如：介绍一个多平台发布工具，重点讲节省重复上传时间，语气真实克制，面向内容创作者。"></textarea>
+              </label>
+              <div class="ai-action-row">
+                <small>{{ ai.runningAction ? '正在生成，请稍候…' : '可以只给大概描述，也可以基于下面已有文案继续优化。' }}</small>
+                <button type="button" :disabled="Boolean(ai.runningAction)" @click="runAi('generate_all')">{{ ai.runningAction === 'generate_all' ? '生成中…' : '生成完整文案' }}</button>
+              </div>
+            </section>
+
+            <div class="field wide">
+              <div class="field-heading"><label for="content-title">标题 <em>{{ form.title.length }}/100</em></label><button type="button" :disabled="Boolean(ai.runningAction)" @click="runAi('optimize_title')">AI 优化标题</button></div>
+              <input id="content-title" v-model="form.title" maxlength="100" placeholder="一句清楚、有力的标题" />
+            </div>
+            <div class="field wide">
+              <div class="field-heading"><label for="content-description">正文描述</label><button type="button" :disabled="Boolean(ai.runningAction)" @click="runAi('optimize_description')">AI 优化正文</button></div>
+              <textarea id="content-description" v-model="form.description" rows="7" placeholder="介绍内容、补充背景，也可以先写一个通用版本…"></textarea>
+            </div>
+            <div class="field wide">
+              <div class="field-heading"><label for="content-tags">话题标签</label><button type="button" :disabled="Boolean(ai.runningAction)" @click="runAi('optimize_tags')">AI 优化标签</button></div>
+              <input id="content-tags" v-model="form.tags" placeholder="AI工具, 内容创作, 效率（用逗号分隔）" />
+            </div>
             <div class="field-row">
               <label class="field"><span>发布时间</span>
-                <select v-model="form.publishMode"><option value="now">审核后立即</option><option value="schedule">定时发布</option></select>
+                <select v-model="form.publishMode" @change="ensureScheduleSelection"><option value="now">审核后立即</option><option value="schedule">定时发布</option></select>
               </label>
-              <label v-if="form.publishMode === 'schedule'" class="field"><span>定时时间</span>
-                <input v-model="form.schedule" type="datetime-local" />
+              <label v-if="form.publishMode === 'schedule'" class="field schedule-field"><span>定时时间 <em>本机时区</em></span>
+                <div class="schedule-picker">
+                  <input v-model="scheduleDate" type="date" :min="todayDate" aria-label="定时发布日期" />
+                  <select v-model="scheduleHour" aria-label="定时发布小时">
+                    <option v-for="hour in scheduleHours" :key="hour" :value="hour">{{ hour }} 时</option>
+                  </select>
+                  <select v-model="scheduleMinute" aria-label="定时发布分钟">
+                    <option v-for="minute in scheduleMinutes" :key="minute" :value="minute">{{ minute }} 分</option>
+                  </select>
+                </div>
+                <small class="field-help">点击日期打开日历；小时和分钟直接选择，分钟以 5 分钟为一档。</small>
               </label>
               <label v-if="hasBilibili" class="field"><span>B站投稿分区</span>
                 <input v-model.number="form.bilibili_tid" type="number" min="1" list="bilibili-zones" placeholder="例如 21" />
@@ -163,7 +207,7 @@
       </section>
 
       <aside class="activity-rail">
-        <div class="section-heading"><div><p class="eyebrow">ACTIVITY</p><h2>任务轨迹</h2></div><button class="text-button" @click="loadTasks">刷新</button></div>
+        <div class="section-heading"><div><p class="eyebrow">DISPATCH LOG</p><h2>任务轨迹</h2></div><button class="text-button" @click="loadTasks">刷新</button></div>
         <div v-if="currentTask" class="review-panel">
           <p class="eyebrow">READY TO REVIEW</p>
           <h3>{{ currentTask.title }}</h3>
@@ -250,6 +294,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 const API = '/api'
 const steps = ['素材', '文案', '平台', '核对', '发布']
 const platforms = ref({})
+const aiProviders = ref({})
 const accounts = ref([])
 const tasks = ref([])
 const selectedKeys = ref([])
@@ -257,6 +302,7 @@ const backendOnline = ref(false)
 const monitorInterval = ref(120)
 const showAccountForm = ref(false)
 const busy = ref(false)
+const showAiKey = ref(false)
 const videoFile = ref(null)
 const coverFile = ref(null)
 const coverUrl = ref('')
@@ -274,6 +320,9 @@ const publishPhases = ref([
 const toast = reactive({ message: '', type: 'ok' })
 const newAccount = reactive({ platform: 'xiaohongshu', alias: '' })
 const form = reactive({ title: '', description: '', tags: '', publishMode: 'now', schedule: '', bilibili_tid: 21, youtube_visibility: 'public', headed: true })
+const ai = reactive({ provider: 'deepseek', model: '', apiKeys: {}, brief: '', runningAction: '' })
+const scheduleHours = Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, '0'))
+const scheduleMinutes = Array.from({ length: 12 }, (_, index) => String(index * 5).padStart(2, '0'))
 let poller
 
 const connectedCount = computed(() => accounts.value.filter(a => a.status === 'connected').length)
@@ -282,8 +331,27 @@ const selectedTargets = computed(() => accounts.value.filter(a => selectedKeys.v
 const canSave = computed(() => videoFile.value && form.title.trim() && selectedTargets.value.length)
 const hasBilibili = computed(() => selectedTargets.value.some(a => a.platform === 'bilibili'))
 const hasYoutube = computed(() => selectedTargets.value.some(a => a.platform === 'youtube'))
+const currentAiModels = computed(() => aiProviders.value[ai.provider]?.models || [])
+const aiApiKey = computed({
+  get: () => ai.apiKeys[ai.provider] || '',
+  set: value => { ai.apiKeys[ai.provider] = value },
+})
+const lastPublishedTask = computed(() => tasks.value.find(task => task.status !== 'draft'))
 const activeStep = computed(() => currentTask.value ? (currentTask.value.status === 'draft' ? 3 : 4) : selectedTargets.value.length ? 2 : videoFile.value ? 1 : 0)
 const monitorText = computed(() => backendOnline.value ? `后台每 ${Math.round(monitorInterval.value / 60)} 分钟复检` : '请启动本地服务')
+const todayDate = computed(() => formatLocalDate(new Date()))
+const scheduleDate = computed({
+  get: () => form.schedule.slice(0, 10),
+  set: value => { form.schedule = `${value}T${scheduleHour.value}:${scheduleMinute.value}` },
+})
+const scheduleHour = computed({
+  get: () => form.schedule.slice(11, 13) || '10',
+  set: value => { form.schedule = `${scheduleDate.value || todayDate.value}T${value}:${scheduleMinute.value}` },
+})
+const scheduleMinute = computed({
+  get: () => form.schedule.slice(14, 16) || '00',
+  set: value => { form.schedule = `${scheduleDate.value || todayDate.value}T${scheduleHour.value}:${value}` },
+})
 
 async function api(path, options = {}) {
   const response = await fetch(`${API}${path}`, options)
@@ -293,6 +361,21 @@ async function api(path, options = {}) {
 }
 
 function notify(message, type = 'ok') { toast.message = message; toast.type = type; window.setTimeout(() => { if (toast.message === message) toast.message = '' }, 3200) }
+function saveAiSettings() {
+  try { sessionStorage.setItem('sau-ai-settings', JSON.stringify({ provider: ai.provider, model: ai.model, apiKeys: ai.apiKeys })) } catch {}
+}
+function restoreAiSettings() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem('sau-ai-settings') || '{}')
+    if (saved.provider) ai.provider = saved.provider
+    if (saved.model) ai.model = saved.model
+    if (saved.apiKeys && typeof saved.apiKeys === 'object') Object.assign(ai.apiKeys, saved.apiKeys)
+  } catch {}
+}
+function selectAiProvider() {
+  ai.model = aiProviders.value[ai.provider]?.default_model || currentAiModels.value[0] || ''
+  saveAiSettings()
+}
 function keyOf(a) { return `${a.platform}:${a.alias}` }
 function isTarget(a) { return selectedKeys.value.includes(keyOf(a)) }
 function toggleTarget(a) { const key = keyOf(a); selectedKeys.value = isTarget(a) ? selectedKeys.value.filter(v => v !== key) : [...selectedKeys.value, key] }
@@ -310,6 +393,21 @@ function phaseLabel(key) { return ({ checking: '校验账号', opening: '打开�
 function activePhase() { return taskLogs.value.find(item => item.status === 'publishing')?.phase || taskLogs.value.at(-1)?.phase || 'checking' }
 function phaseClass(key, index) { const current = activePhase(); const currentIndex = publishPhases.value.findIndex(item => item.key === current); return { active: key === current, done: current === 'success' || (currentIndex >= 0 && index < currentIndex), failed: ['failed', 'stopped'].includes(current) && index === Math.max(0, currentIndex) } }
 function formatBytes(n) { return n > 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : `${(n / 1048576).toFixed(1)} MB` }
+function formatLocalDate(value) {
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+function ensureScheduleSelection() {
+  if (form.publishMode !== 'schedule' || form.schedule) return
+  const suggested = new Date(Date.now() + 2 * 60 * 60 * 1000)
+  suggested.setSeconds(0, 0)
+  suggested.setMinutes(Math.ceil(suggested.getMinutes() / 5) * 5)
+  const hour = String(suggested.getHours()).padStart(2, '0')
+  const minute = String(suggested.getMinutes()).padStart(2, '0')
+  form.schedule = `${formatLocalDate(suggested)}T${hour}:${minute}`
+}
 function safeTransferName(file, prefix) { const match = file.name.match(/\.(jpe?g|png|webp)$/i); return `${prefix}.${match ? match[1].toLowerCase() : 'jpg'}` }
 function relativeTime(value) { if (!value) return '尚未检测'; const seconds = Math.floor((Date.now() - new Date(value).getTime()) / 1000); if (seconds < 60) return '刚刚'; if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`; if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`; return new Date(value).toLocaleDateString('zh-CN') }
 function pickVideo(e) { videoFile.value = e.target.files[0] || null; currentTask.value = null }
@@ -344,10 +442,40 @@ async function addAccount() { if (!newAccount.alias) return notify('请填写账
 async function checkAccount(a) { try { await api(`/accounts/${a.platform}/${a.alias}/check`, { method: 'POST' }); await loadAccounts() } catch (e) { notify(e.message, 'error') } }
 async function loginAccount(a) { try { await api(`/accounts/${a.platform}/${a.alias}/login`, { method: 'POST' }); notify('登录窗口已打开，请在那里完成登录'); await loadAccounts() } catch (e) { notify(e.message, 'error') } }
 
+async function runAi(action) {
+  if (!aiApiKey.value.trim()) return notify(`请先填写 ${aiProviders.value[ai.provider]?.name || '模型'} API Key`, 'error')
+  if (!ai.model.trim()) return notify('请选择或填写模型名称', 'error')
+  if (![ai.brief, form.title, form.description, form.tags].some(value => value.trim())) return notify('请先填写创作意图或现有文案', 'error')
+  ai.runningAction = action
+  saveAiSettings()
+  try {
+    const result = await api('/ai/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: ai.provider,
+        api_key: aiApiKey.value,
+        model: ai.model,
+        action,
+        brief: ai.brief,
+        title: form.title,
+        description: form.description,
+        tags: form.tags,
+      }),
+    })
+    if (action === 'generate_all' || action === 'optimize_title') form.title = result.title || form.title
+    if (action === 'generate_all' || action === 'optimize_description') form.description = result.description || form.description
+    if (action === 'generate_all' || action === 'optimize_tags') form.tags = result.tags || form.tags
+    currentTask.value = null
+    notify(action === 'generate_all' ? '完整文案已生成，请核对后使用' : '文案已优化，请核对修改')
+  } catch (e) { notify(e.message, 'error') } finally { ai.runningAction = '' }
+}
+
 async function saveDraft() {
   if (!videoFile.value) return notify('请先放入主视频', 'error')
   if (!form.title.trim()) return notify('请填写标题', 'error')
   if (!selectedTargets.value.length) return notify('请点击左侧已联通的账号，选择发布目标', 'error')
+  if (form.publishMode === 'schedule' && !form.schedule) return notify('请选择定时发布日期和时间', 'error')
   busy.value = true
   try {
     const schedule = form.publishMode === 'schedule' && form.schedule ? form.schedule.replace('T', ' ') : ''
@@ -397,6 +525,29 @@ async function createRetryDraft() {
   } catch (e) { notify(e.message, 'error') } finally { busy.value = false }
 }
 
-onMounted(async () => { await loadHealth(); try { platforms.value = await api('/platforms') } catch {} await Promise.all([loadAccounts(), loadTasks()]); poller = window.setInterval(() => { loadAccounts(); loadTasks(); loadHealth() }, 5000) })
+async function reuseLastPublish() {
+  if (!lastPublishedTask.value) return notify('还没有可复用的历史发布任务', 'error')
+  busy.value = true
+  try {
+    const data = await api(`/tasks/${lastPublishedTask.value.id}/duplicate`, { method: 'POST' })
+    currentTask.value = data.task
+    publishConfirmed.value = false
+    await loadTasks()
+    notify('已生成复用草稿，请核对平台并重新选择发布时间')
+  } catch (e) { notify(e.message, 'error') } finally { busy.value = false }
+}
+
+onMounted(async () => {
+  restoreAiSettings()
+  await loadHealth()
+  try { platforms.value = await api('/platforms') } catch {}
+  try {
+    aiProviders.value = await api('/ai/providers')
+    if (!aiProviders.value[ai.provider]) ai.provider = Object.keys(aiProviders.value)[0] || 'deepseek'
+    if (!ai.model) selectAiProvider()
+  } catch {}
+  await Promise.all([loadAccounts(), loadTasks()])
+  poller = window.setInterval(() => { loadAccounts(); loadTasks(); loadHealth() }, 5000)
+})
 onBeforeUnmount(() => { window.clearInterval(poller); if (coverUrl.value) URL.revokeObjectURL(coverUrl.value); if (portraitCoverUrl.value) URL.revokeObjectURL(portraitCoverUrl.value) })
 </script>
