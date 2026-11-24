@@ -1,0 +1,94 @@
+name: Build macOS DMG
+
+on:
+  # 手动触发（Actions 页面 → Run workflow）
+  workflow_dispatch:
+  push:
+    # 打包相关改动合并进 main 时自动构建，产物留在 Actions Artifacts
+    branches:
+      - main
+    # 打 v* 标签时构建并把 DMG 挂到 GitHub Release
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: DMG ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple Silicon 原生构建
+          - runner: macos-14
+            arch: arm64
+          # Intel 原生构建（macos-15-intel 是当前 Intel 标签；若已下线可换 macos-13）
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: sau_frontend/package-lock.json
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build DMG
+        env:
+          # 未配置 Secrets 时为空 → 脚本自动退回 ad-hoc 签名（内测可分发）
+          DEVELOPER_ID: ${{ secrets.MACOS_DEVELOPER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # 国内网络建议保留镜像；境外 runner 也可删除此行
+          PLAYWRIGHT_DOWNLOAD_HOST: https://npmmirror.com/mirrors/playwright
+        run: |
+          chmod +x packaging/build-macos.sh packaging/macos/*.sh 2>/dev/null || true
+          ./packaging/build-macos.sh
+
+      - name: Show result
+        run: |
+          ls -lh release/*.dmg
+          shasum -a 256 release/*.dmg | tee release/SHA256SUMS-macos.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DaydreamDispatch-macOS-${{ matrix.arch }}
+          path: |
+            release/*.dmg
+            release/SHA256SUMS-macos.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Attach to Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.dmg
+            dist/SHA256SUMS-macos.txt

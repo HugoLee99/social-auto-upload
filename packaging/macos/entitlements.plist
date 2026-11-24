@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Chromium 内核需要 JIT 与动态代码页 -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <!-- Patchright 会加载内嵌 Chromium 自带的 dylib，关闭库校验 -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- 发布平台与模型 API 均为外网访问；非沙盒应用不需要 network.client，保留 harmless -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+</dict>
+</plist>

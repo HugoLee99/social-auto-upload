@@ -115,6 +115,7 @@ CLI 命令按平台维护在 `sau_commands/`，发布流程位于 `uploader/`。
 
 - [安装说明](./docs/install.md)
 - [更新说明](./docs/update.md)
+- [macOS 安装、打包与分发](./docs/install-macos.md)
 
 
 ### AI Agent

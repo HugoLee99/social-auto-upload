@@ -1,0 +1,61 @@
+白日梦内容分发助手 · macOS 使用说明
+==============================================
+
+【这是什么】
+  把 social-auto-upload 的多平台分发能力（抖音、小红书、B站、视频号、
+  YouTube 等）做成一个本机控制台：双击应用 → 浏览器打开 http://127.0.0.1:5409
+  → 在这里登录账号、上传视频、批量发布。
+
+【安装（第一次）】
+  1. 把整个 zip 解压到「下载」或桌面（不要在 zip 里面直接双击）。
+  2. 双击「安装白日梦.command」。
+     - 如果提示“无法验证开发者”：右键点它 → 选择「打开」→ 再点「打开」。
+     - 如果双击没反应：打开「终端」，cd 到解压目录后执行
+         bash "./安装白日梦.command"
+  3. 看到“安装完成，正在启动”即成功。首次安装需要联网 3-10 分钟
+     （下载 Python 3.12 + 依赖 + 内置 Chromium，约 300-400MB）。
+  4. 浏览器会自动打开控制台；没弹出就手动访问 http://127.0.0.1:5409
+
+【以后启动】
+  在「启动台」或「应用程序」里找到「白日梦内容分发助手」，双击打开。
+  再次打开时如果服务还在运行，会直接帮你打开控制台页面。
+
+【数据放在哪里】
+  ~/Library/Application Support/DaydreamDispatch
+    ├─ app/            程序本体
+    ├─ venv/           Python 环境
+    ├─ ms-playwright/  内置 Chromium
+    ├─ cookies/        各平台登录态（等同账号凭证，别外传）
+    └─ .local/workbench/   草稿、上传素材、任务记录、日志（logs/）
+
+【关闭程序】
+  它不是常驻菜单栏的应用。右键 Dock 图标 → 退出，或打开「活动监视器」
+  结束名为 python 的进程。关闭后账号后台复检也会停止。
+
+【卸载】
+  双击「卸载白日梦.command」，先删应用，再询问是否清空 Cookie 与任务数据。
+
+【常见问题】
+  · 提示“已损坏，无法打开”
+      打开终端执行（把路径换成你的实际位置）：
+        xattr -dr com.apple.quarantine "$HOME/Applications/白日梦内容分发助手.app"
+      然后重新双击应用。
+  · 提示端口被占用
+      换端口启动：在终端执行
+        SAU_PORT=5410 "$HOME/Applications/白日梦内容分发助手.app/Contents/MacOS/Daydream"
+  · 发布失败并提示浏览器问题
+      优先安装 Google Chrome；没有内置 Chromium 时程序会自动用 Chrome。
+      补装内置浏览器：
+        PLAYWRIGHT_BROWSERS_PATH="$HOME/Library/Application Support/DaydreamDispatch/ms-playwright" \
+        "$HOME/Library/Application Support/DaydreamDispatch/venv/bin/python" -m patchright install chromium
+  · 文章（大鱼号/雪球/知乎）渲染失败
+      文章主题渲染依赖 Node.js 22+，请安装后再发布文章；纯视频发布不需要。
+  · macOS 要求“辅助功能/自动化”权限
+      首次让程序代你操作浏览器时，按系统弹窗允许即可。
+  · Apple Silicon 与 Intel
+      这个安装包在两种 Mac 上都是本机原生安装（安装时才下载对应架构的
+      Python 与 Chromium），不需要 Rosetta。
+
+【安全提示】
+  cookies/ 目录里是你的平台登录凭证，等同于账号密码。不要把整个数据目录
+  发给别人，也不要把日志里的链接随意公开。
