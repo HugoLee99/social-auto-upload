@@ -121,7 +121,7 @@ if [ "${SKIP_BROWSER:-0}" = "1" ]; then
   warn "已按 SKIP_BROWSER=1 跳过 Chromium，安装包只会在用户机器的 Chrome/Edge 上运行"
 else
   export SAU_BUNDLE_BROWSER=1
-  log "下载并内嵌 Patchright Chromium（$ARCH）"
+  log "下载并内嵌 Patchright Chromium（${ARCH}）"
   if ! "$PYTHON" -m patchright install chromium; then
     warn "python -m patchright 失败，改用 patchright 命令行重试"
     "$PROJECT_ROOT/.venv-macos/bin/patchright" install chromium
@@ -132,7 +132,7 @@ fi
 log "PyInstaller 打包 .app"
 cd "$PROJECT_ROOT"
 "$PYTHON" -m PyInstaller --noconfirm --clean "$PACKAGING/daydream_dispatch.spec"
-[ -d "$APP_BUNDLE" ] || fail "未生成 $APP_BUNDLE，请查看上方 PyInstaller 日志"
+[ -d "$APP_BUNDLE" ] || fail "未生成 ${APP_BUNDLE}，请查看上方 PyInstaller 日志"
 
 # 许可证随包分发（上游为 MIT）
 mkdir -p "$APP_BUNDLE/Contents/Resources"

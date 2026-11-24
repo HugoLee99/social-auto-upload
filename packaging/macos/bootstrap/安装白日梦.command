@@ -35,7 +35,7 @@ printf '  %s · macOS 安装\n' "$APP_NAME"
 printf '==============================================\n\n'
 
 ARCH="$(uname -m)"
-say "系统架构：$ARCH（macOS $(sw_vers -productVersion)）"
+say "系统架构：${ARCH}（macOS $(sw_vers -productVersion)）"
 [ "$ARCH" = "arm64" ] || [ "$ARCH" = "x86_64" ] || die "不支持的架构：$ARCH"
 
 # ---------------------------------------------------------------- 1. 复制程序
