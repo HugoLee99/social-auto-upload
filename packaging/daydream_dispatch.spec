@@ -21,8 +21,10 @@ icon_dir = project_root / "packaging" / "icons"
 workbench_datas = [(str(frontend), "sau_frontend/dist")]
 cli_datas = collect_data_files("patchright")
 cli_datas += collect_data_files("utils")
-if os.getenv("SAU_BUNDLE_BROWSER") == "1" and browser_root.exists():
-    cli_datas.append((str(browser_root), "ms-playwright"))
+# 注意：内嵌的 Patchright Chromium 不放进 datas。
+# PyInstaller 6 会把数据目录里的 Mach-O 当作待签名二进制处理，而 Chrome for Testing
+# 的 framework 自带 Google 签名，重签会直接报 "bundle format unrecognized"。
+# 浏览器改由 build-macos.sh 在 PyInstaller 完成后整目录拷进 .app（见第 5.5 步）。
 
 hiddenimports = []
 for package in ("sau_commands", "uploader", "utils", "myUtils"):

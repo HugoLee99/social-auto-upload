@@ -140,6 +140,25 @@ cp "$PROJECT_ROOT/LICENSE" "$APP_BUNDLE/Contents/Resources/LICENSE.txt"
 cp "$PROJECT_ROOT/THIRD_PARTY_NOTICES.txt" "$APP_BUNDLE/Contents/Resources/THIRD_PARTY_NOTICES.txt"
 xattr -cr "$APP_BUNDLE" 2>/dev/null || true
 
+# ---------------------------------------------------------------- 5.5 内嵌 Chromium
+# 不能交给 PyInstaller 收 datas：它会对 Mach-O 重新签名，而 Chrome for Testing 的
+# framework 带 Google 签名，重签会报 "bundle format unrecognized, invalid, or unsuitable"。
+# 因此在 PyInstaller 结束后整目录拷贝，保留浏览器自身签名。
+if [ "${SKIP_BROWSER:-0}" != "1" ] && [ -d "$PACKAGING/playwright-browsers" ]; then
+  log "内嵌 Chromium（保留 Google 原有签名，不参与 PyInstaller 签名）"
+  DATA_ROOT="$APP_BUNDLE/Contents/Frameworks"
+  if [ -d "$APP_BUNDLE/Contents/Resources/sau_frontend" ]; then
+    DATA_ROOT="$APP_BUNDLE/Contents/Resources"
+  fi
+  mkdir -p "$DATA_ROOT"
+  rm -rf "$DATA_ROOT/ms-playwright"
+  cp -R "$PACKAGING/playwright-browsers" "$DATA_ROOT/ms-playwright"
+  [ -d "$DATA_ROOT/ms-playwright" ] || fail "Chromium 拷贝失败"
+  ok "Chromium 已内嵌（$(du -sh "$DATA_ROOT/ms-playwright" | cut -f1)）"
+else
+  warn "未内嵌 Chromium，运行时会退回用户机器上的 Chrome/Edge"
+fi
+
 # ---------------------------------------------------------------- 6. 代码签名
 sign_darwin() {
   local target="$1"
@@ -157,13 +176,20 @@ if [ -n "${DEVELOPER_ID:-}" ]; then
   xattr -cr "$APP_BUNDLE" 2>/dev/null || true
   while IFS= read -r -d '' item; do
     sign_darwin "$item"
-  done < <(find "$APP_BUNDLE" -depth \( -name "*.framework" -o -name "*.app" -o -name "*.dylib" -o -name "*.so" \) ! -path "$APP_BUNDLE" -print0)
+  done < <(find "$APP_BUNDLE" -depth \( -name "*.framework" -o -name "*.app" -o -name "*.dylib" -o -name "*.so" \) ! -path "$APP_BUNDLE" ! -path '*/ms-playwright/*' -print0)
   sign_darwin "$APP_BUNDLE"
   codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
   ok "签名校验通过"
+  warn "内嵌 Chromium 保留 Google 签名、未做 Developer ID 重签，公证大概率会被 Apple 拒绝；需要可公证的安装包请用 SKIP_BROWSER=1 构建（运行时用用户自己的 Chrome）。"
 else
   warn "未配置 DEVELOPER_ID，改用 ad-hoc 签名。下载分发后首次打开需要右键→打开，或执行 xattr 去隔离。"
-  codesign --force --deep --sign - "$APP_BUNDLE"
+  # 逐项 ad-hoc 签名；跳过内嵌 Chromium（它自带 Google 签名，重签会破坏 bundle）
+  while IFS= read -r -d '' item; do
+    codesign --force --sign - "$item" >/dev/null 2>&1 || warn "逐项签名失败：$item"
+  done < <(find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" -o -perm -111 \) ! -path '*/ms-playwright/*' -print0)
+  codesign --force --sign - "$APP_BUNDLE"
+  codesign --verify --strict --verbose=2 "$APP_BUNDLE" || fail "ad-hoc 签名校验失败，请检查 .app 结构"
+  ok "ad-hoc 签名完成"
 fi
 
 # ---------------------------------------------------------------- 7. DMG
