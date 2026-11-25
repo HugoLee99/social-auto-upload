@@ -77,6 +77,19 @@ jobs:
         run: |
           ls -lh release/*.dmg
           shasum -a 256 release/*.dmg | tee release/SHA256SUMS-macos.txt
+          APP="dist/白日梦内容分发助手.app"
+          {
+            echo "Arch: ${{ matrix.arch }}"
+            echo "Runner: $(sw_vers -productName) $(sw_vers -productVersion) ($(uname -m))"
+            echo "App size: $(du -sh "$APP" | cut -f1)"
+            echo "Browsers: $(du -sh "$APP/Contents/Frameworks/ms-playwright" 2>/dev/null | cut -f1 || echo missing)"
+            echo "Chromium builds:"
+            ls -1 "$APP/Contents/Frameworks/ms-playwright" 2>/dev/null || echo "  (none)"
+            echo "Codesign verify:"
+            codesign --verify --strict --verbose=2 "$APP" 2>&1 || true
+            echo "DMG:"
+            ls -lh release/*.dmg
+          } | tee release/build-info.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -85,6 +98,7 @@ jobs:
           path: |
             release/*.dmg
             release/SHA256SUMS-macos.txt
+            release/build-info.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -108,3 +122,4 @@ jobs:
           files: |
             dist/*.dmg
             dist/SHA256SUMS-macos.txt
+            dist/build-info.txt
