@@ -94,8 +94,24 @@ RUNTIME_DEPS=(
   "flask-cors==6.0.0"
 )
 log "安装运行依赖与打包工具"
-uv pip install --python "$PYTHON" "${RUNTIME_DEPS[@]}"
-uv pip install --python "$PYTHON" pyinstaller pillow
+# 网络偶发超时很常见（runner 访问 PyPI 会抖），依赖安装做 3 次重试
+export UV_HTTP_TIMEOUT=120
+uv_install_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    if uv pip install --python "$PYTHON" "$@"; then
+      return 0
+    fi
+    if [ "$attempt" = "3" ]; then
+      fail "依赖安装连续 3 次失败，请检查网络或换用镜像源"
+    fi
+    warn "依赖安装失败（第 ${attempt} 次），10 秒后重试"
+    sleep 10
+  done
+}
+
+uv_install_retry "${RUNTIME_DEPS[@]}"
+uv_install_retry pyinstaller pillow
 
 # ---------------------------------------------------------------- 2. 前端
 if [ "$SKIP_FRONTEND" -eq 0 ]; then
