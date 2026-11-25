@@ -73,6 +73,24 @@ jobs:
           git commit -m "ci: build log ${{ matrix.arch }} run ${{ github.run_id }}" || true
           git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:ci-logs" || echo "log push failed"
 
+      # 冒烟测试：在 runner 上真跑一次冻结好的 .app，确认 Flask 能起来
+      - name: Smoke test
+        run: |
+          APP="dist/白日梦内容分发助手.app"
+          "$APP/Contents/MacOS/DaydreamDispatch" > smoke.log 2>&1 &
+          PID=$!
+          ok=0
+          for i in $(seq 1 30); do
+            sleep 2
+            if curl -fsS --max-time 2 http://127.0.0.1:5409/ >/dev/null 2>&1; then ok=1; break; fi
+            if ! kill -0 "$PID" 2>/dev/null; then break; fi
+          done
+          kill "$PID" 2>/dev/null || true
+          echo "----- smoke.log (tail) -----"
+          tail -n 60 smoke.log || true
+          test "$ok" = "1" || { echo "冻结后的应用未能在 5409 提供 HTTP 响应"; exit 1; }
+          echo "smoke ok"
+
       - name: Show result
         run: |
           ls -lh release/*.dmg
