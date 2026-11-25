@@ -184,11 +184,21 @@ if [ -n "${DEVELOPER_ID:-}" ]; then
   warn "内嵌 Chromium 保留 Google 签名、未做 Developer ID 重签，公证大概率会被 Apple 拒绝；需要可公证的安装包请用 SKIP_BROWSER=1 构建（运行时用用户自己的 Chrome）。"
 else
   warn "未配置 DEVELOPER_ID，改用 ad-hoc 签名。下载分发后首次打开需要右键→打开，或执行 xattr 去隔离。"
-  # 逐项 ad-hoc 签名；跳过内嵌 Chromium（它自带 Google 签名，重签会破坏 bundle）
+  # 由内向外逐项 ad-hoc 签名：先可执行文件与 dylib，再 .framework / .app，最后整体。
+  # 内嵌 Chromium 也要签：外层 bundle 的签名要求所有嵌套代码都有有效签名。
+  # 注意不能用 --deep，Chrome for Testing 的多层 framework 会被 --deep 误判。
   while IFS= read -r -d '' item; do
-    codesign --force --sign - "$item" >/dev/null 2>&1 || warn "逐项签名失败：$item"
-  done < <(find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" -o -perm -111 \) ! -path '*/ms-playwright/*' -print0)
-  codesign --force --sign - "$APP_BUNDLE"
+    case "$item" in
+      *.framework|*.app) continue ;;
+    esac
+    codesign --force --sign - "$item" >/dev/null 2>&1 || warn "文件签名失败：$item"
+  done < <(find "$APP_BUNDLE" -type f \( -name "*.dylib" -o -name "*.so" -o -perm -111 \) ! -path "$APP_BUNDLE" -print0)
+
+  while IFS= read -r -d '' item; do
+    codesign --force --sign - "$item" >/dev/null 2>&1 || warn "bundle 签名失败：$item"
+  done < <(find "$APP_BUNDLE" -depth \( -name "*.framework" -o -name "*.app" \) ! -path "$APP_BUNDLE" -print0)
+
+  codesign --force --sign - "$APP_BUNDLE" || fail "ad-hoc 签名 .app 失败"
   codesign --verify --strict --verbose=2 "$APP_BUNDLE" || fail "ad-hoc 签名校验失败，请检查 .app 结构"
   ok "ad-hoc 签名完成"
 fi
