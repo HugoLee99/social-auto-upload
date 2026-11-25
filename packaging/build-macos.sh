@@ -146,14 +146,15 @@ xattr -cr "$APP_BUNDLE" 2>/dev/null || true
 # 因此在 PyInstaller 结束后整目录拷贝，保留浏览器自身签名。
 if [ "${SKIP_BROWSER:-0}" != "1" ] && [ -d "$PACKAGING/playwright-browsers" ]; then
   log "内嵌 Chromium（保留 Google 原有签名，不参与 PyInstaller 签名）"
+  # PyInstaller 的 onedir .app 里 sys._MEIPASS == Contents/Frameworks，
+  # workbench_server.py 用 RESOURCE_ROOT/ms-playwright 定位浏览器，必须放在这里。
   DATA_ROOT="$APP_BUNDLE/Contents/Frameworks"
-  if [ -d "$APP_BUNDLE/Contents/Resources/sau_frontend" ]; then
-    DATA_ROOT="$APP_BUNDLE/Contents/Resources"
-  fi
   mkdir -p "$DATA_ROOT"
   rm -rf "$DATA_ROOT/ms-playwright"
   cp -R "$PACKAGING/playwright-browsers" "$DATA_ROOT/ms-playwright"
-  [ -d "$DATA_ROOT/ms-playwright" ] || fail "Chromium 拷贝失败"
+  [ -d "$DATA_ROOT/ms-playwright/chromium" ] || \
+    ls -d "$DATA_ROOT"/ms-playwright/chromium-* >/dev/null 2>&1 || \
+    fail "Chromium 拷贝失败：$DATA_ROOT/ms-playwright 下没有 chromium"
   ok "Chromium 已内嵌（$(du -sh "$DATA_ROOT/ms-playwright" | cut -f1)）"
 else
   warn "未内嵌 Chromium，运行时会退回用户机器上的 Chrome/Edge"
