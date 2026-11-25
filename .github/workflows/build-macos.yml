@@ -76,7 +76,7 @@ jobs:
       - name: Show result
         run: |
           ls -lh release/*.dmg
-          shasum -a 256 release/*.dmg | tee release/SHA256SUMS-macos.txt
+          shasum -a 256 release/*.dmg | tee release/SHA256SUMS-macOS-${{ matrix.arch }}.txt
           APP="dist/白日梦内容分发助手.app"
           test -d "$APP/Contents/Frameworks/ms-playwright" || { echo "ms-playwright 不在 Contents/Frameworks，运行时定位不到 Chromium"; exit 1; }
           {
@@ -98,7 +98,7 @@ jobs:
           name: DaydreamDispatch-macOS-${{ matrix.arch }}
           path: |
             release/*.dmg
-            release/SHA256SUMS-macos.txt
+            release/SHA256SUMS-macOS-${{ matrix.arch }}.txt
             release/build-info.txt
           if-no-files-found: error
           retention-days: 14
@@ -122,5 +122,5 @@ jobs:
         with:
           files: |
             dist/*.dmg
-            dist/SHA256SUMS-macos.txt
+            dist/SHA256SUMS-macOS-*.txt
             dist/build-info.txt

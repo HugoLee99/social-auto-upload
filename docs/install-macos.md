@@ -14,6 +14,40 @@
 
 ---
 
+## 零、直接下载已经发布好的安装包（0.1.1）
+
+给普通用户最简单的方式：直接用 GitHub Release 里现成的 DMG，不需要他有 Xcode / Python / Node。
+
+| 机型 | 下载链接 | 大小 | SHA256 |
+| --- | --- | --- | --- |
+| Apple Silicon（M1/M2/M3/M4） | [DaydreamDispatch-0.1.1-macOS-arm64.dmg](https://github.com/HugoLee99/social-auto-upload/releases/download/v0.1.1/DaydreamDispatch-0.1.1-macOS-arm64.dmg) | 334 MB | `281fec9471cab41375340e5ecf53266248850e2fe3c89f08de45b87b083a9bb3` |
+| Intel 芯片（x86_64） | [DaydreamDispatch-0.1.1-macOS-x86_64.dmg](https://github.com/HugoLee99/social-auto-upload/releases/download/v0.1.1/DaydreamDispatch-0.1.1-macOS-x86_64.dmg) | 374 MB | `1e3bd7fe045108a7c0c5f09e7957142a596e9ab327243dd5fa46a9449ad49ac0` |
+
+Release 页面：<https://github.com/HugoLee99/social-auto-upload/releases/tag/v0.1.1>
+
+**安装三步**
+
+1. 双击 DMG，把「白日梦内容分发助手.app」拖进 `Applications`（应用程序）文件夹。
+2. **首次打开**：在 Finder 里右键这个 app → 选「打开」→ 弹窗里再点「打开」。
+   也可以先执行一次去隔离：
+   ```bash
+   xattr -dr com.apple.quarantine "/Applications/白日梦内容分发助手.app"
+   ```
+3. 启动后会自动打开浏览器控制台 `http://127.0.0.1:5409`；账号、任务数据在
+   `~/Library/Application Support/DaydreamDispatch`。
+
+**说明**
+
+- 包内已内嵌 Chromium（`chromium-1248`）与 ffmpeg，用户机器上不需要另装 Chrome。
+- 最低系统：macOS 11.0；两个 DMG 都是在真实 macOS runner 上分别按 arm64 / x86_64 原生构建的。
+- 当前是 **ad-hoc 签名、未公证**（项目还没有 Developer ID 证书），所以 Gatekeeper 一定会拦一次，
+  这属于正常现象，不代表文件损坏；右键打开或去隔离即可。
+- **不要用 v0.1.0**：那一版把 Chromium 放到了 `Contents/Resources`，而运行时是从
+  `Contents/Frameworks`（`sys._MEIPASS`）找浏览器，会找不到。
+- 卸载：删掉 app，再按需删 `~/Library/Application Support/DaydreamDispatch`。
+
+---
+
 ## 一、给 Apple 用户：两种安装方式
 
 ### 方式 A：引导安装包（推荐给内测用户，无需你手上有 Mac）
