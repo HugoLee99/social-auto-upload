@@ -1,0 +1,22 @@
+[1;36m[白日梦][0m 开始构建：版本 0.1.1 / 架构 x86_64
+[1;36m[白日梦][0m 工程目录：/Users/runner/work/social-auto-upload/social-auto-upload
+[1;36m[白日梦][0m 准备 Python 3.12 虚拟环境（.venv-macos）
+Using CPython 3.12.10 interpreter at: /usr/local/bin/python3.12
+Creating virtual environment at: .venv-macos
+Activate with: source .venv-macos/bin/activate
+[1;36m[白日梦][0m 安装运行依赖与打包工具
+Using Python 3.12.10 environment at: .venv-macos
+Resolved 28 packages in 238ms
+Downloading lxml (4.4MiB)
+Downloading opencv-python (44.8MiB)
+Downloading playwright (37.8MiB)
+Downloading numpy (6.5MiB)
+Downloading patchright (42.4MiB)
+ Downloaded lxml
+error: Failed to download `playwright==1.52.0`
+  cause: Request failed after 4 retries in 44.4s
+  cause: Failed to fetch: https://files.pythonhosted.org/packages/a2/ff/eee8532cff4b3d768768152e8c4f30d3caa80f2969bf3143f4371d377b74/playwright-1.52.0-py3-none-macosx_11_0_universal2.whl
+  cause: error sending request for url (https://files.pythonhosted.org/packages/a2/ff/eee8532cff4b3d768768152e8c4f30d3caa80f2969bf3143f4371d377b74/playwright-1.52.0-py3-none-macosx_11_0_universal2.whl)
+  cause: client error (Connect)
+  cause: operation timed out
+[1;31m[错误][0m 第 97 行执行失败，已中止。
